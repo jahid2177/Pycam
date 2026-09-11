@@ -1,0 +1,43 @@
+name: Unzip CamScannerPython.zip
+
+on:
+  push:
+    paths:
+      - 'CamScannerPython.zip'  # যখনই এই zip ফাইলটি আপলোড/পুশ করবেন তখনই রান হবে
+  workflow_dispatch:           # ম্যানুয়ালি Actions ট্যাব থেকেও রান করার সুবিধা
+
+jobs:
+  unzip-job:
+    runs-on: ubuntu-latest
+    
+    # Repository-তে পরিবর্তন পুশ করার জন্য পারমিশন
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Extract CamScannerPython.zip
+        run: |
+          if [ -f "CamScannerPython.zip" ]; then
+            echo "Unzipping CamScannerPython.zip..."
+            
+            # Zip ফাইলটি Root ফোল্ডারে Unzip করা হচ্ছে
+            unzip -o CamScannerPython.zip -d ./
+            
+            # Unzip হয়ে যাওয়ার পর মূল Zip ফাইলটি মুছে ফেলা হচ্ছে
+            rm CamScannerPython.zip
+          else
+            echo "CamScannerPython.zip file not found!"
+            exit 1
+          fi
+
+      - name: Commit and Push Extracted Files
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add .
+          git commit -m "Unzipped CamScannerPython.zip successfully" || echo "No changes to commit"
+          git push
