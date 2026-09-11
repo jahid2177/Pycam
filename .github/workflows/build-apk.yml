@@ -14,20 +14,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Fetch camera4kivy's CameraX provider
         run: |
           git clone https://github.com/Android-for-Python/camerax_provider.git
           rm -rf camerax_provider/.git
 
-      - name: Build APK with Buildozer
-        uses: ArtemSBulgakov/buildozer-action@v1
-        with:
-          buildozer_version: stable
+      - name: Build APK with Buildozer (official Docker image)
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/home/user/hostcwd" \
+            kivy/buildozer android debug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
