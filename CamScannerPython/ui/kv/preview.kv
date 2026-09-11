@@ -1,0 +1,85 @@
+#:import dp kivy.metrics.dp
+
+<PreviewScreen>:
+    preview_image: preview_image
+    filter_row: filter_row
+    processing_label: processing_label
+
+    MDBoxLayout:
+        orientation: "vertical"
+        md_bg_color: 0, 0, 0, 1
+
+        MDTopAppBar:
+            title: "Review Page"
+            elevation: 0
+            md_bg_color: 0, 0, 0, 1
+            specific_text_color: 1, 1, 1, 1
+            left_action_items: [["close", lambda x: root.discard()]]
+
+        FloatLayout:
+            Image:
+                id: preview_image
+                allow_stretch: True
+                keep_ratio: True
+
+            MDLabel:
+                id: processing_label
+                text: "Applying filter..."
+                halign: "center"
+                theme_text_color: "Custom"
+                text_color: 1, 1, 1, 1
+                size_hint: 1, None
+                height: dp(32)
+                pos_hint: {"center_x": 0.5, "center_y": 0.5}
+                opacity: 0
+
+        ScrollView:
+            size_hint_y: None
+            height: dp(56)
+            do_scroll_y: False
+
+            MDBoxLayout:
+                id: filter_row
+                orientation: "horizontal"
+                adaptive_width: True
+                padding: dp(12), dp(4)
+                spacing: dp(8)
+
+        MDBoxLayout:
+            orientation: "vertical"
+            size_hint_y: None
+            height: dp(128)
+            padding: dp(16), dp(8)
+            spacing: dp(4)
+            md_bg_color: 0, 0, 0, 1
+
+            MDBoxLayout:
+                orientation: "horizontal"
+                spacing: dp(8)
+
+                MDFlatButton:
+                    text: "RETAKE"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+                    on_release: root.retake()
+
+                MDFlatButton:
+                    text: "ADJUST CORNERS"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+                    on_release: root.adjust_crop()
+
+            MDBoxLayout:
+                orientation: "horizontal"
+                spacing: dp(8)
+
+                MDRaisedButton:
+                    text: "SCAN ANOTHER PAGE"
+                    size_hint_x: 1
+                    on_release: root.scan_another()
+
+                MDRaisedButton:
+                    text: "DONE"
+                    size_hint_x: 1
+                    md_bg_color: app.theme_cls.accent_color
+                    on_release: root.finish_session()
