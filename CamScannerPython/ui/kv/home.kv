@@ -1,0 +1,121 @@
+#:import dp kivy.metrics.dp
+
+<HomeScreen>:
+    recent_list: recent_list
+    empty_state: empty_state
+    doc_count_label: doc_count_label
+
+    MDBoxLayout:
+        orientation: "vertical"
+
+        MDTopAppBar:
+            title: "Document Scanner"
+            elevation: 2
+            right_action_items: [["magnify", lambda x: root.open_search()], ["cog", lambda x: root.go_settings()]]
+
+        MDBoxLayout:
+            orientation: "vertical"
+            padding: dp(16), dp(12), dp(16), dp(0)
+            size_hint_y: None
+            height: dp(36)
+
+            MDLabel:
+                id: doc_count_label
+                text: "0 documents"
+                theme_text_color: "Secondary"
+                font_style: "Caption"
+
+        ScrollView:
+            do_scroll_x: False
+
+            MDBoxLayout:
+                orientation: "vertical"
+                adaptive_height: True
+                padding: dp(8)
+                spacing: dp(4)
+
+                MDBoxLayout:
+                    id: empty_state
+                    orientation: "vertical"
+                    adaptive_height: True
+                    padding: dp(32)
+                    spacing: dp(8)
+
+                    MDIcon:
+                        icon: "file-document-outline"
+                        halign: "center"
+                        font_size: "56sp"
+                        theme_text_color: "Hint"
+
+                    MDLabel:
+                        text: "No documents yet"
+                        halign: "center"
+                        theme_text_color: "Hint"
+
+                    MDLabel:
+                        text: "Tap the camera button below to scan your first page"
+                        halign: "center"
+                        theme_text_color: "Hint"
+                        font_style: "Caption"
+
+                MDList:
+                    id: recent_list
+
+        MDBoxLayout:
+            orientation: "horizontal"
+            size_hint_y: None
+            height: dp(72)
+            padding: dp(16), dp(8)
+            spacing: dp(24)
+            md_bg_color: app.theme_cls.bg_light
+
+            MDIconButton:
+                icon: "folder-multiple-outline"
+                on_release: root.go_documents()
+
+            Widget:
+
+            MDFloatingActionButton:
+                icon: "camera"
+                md_bg_color: app.theme_cls.primary_color
+                pos_hint: {"center_y": 0.5}
+                on_release: root.start_scan()
+
+            Widget:
+
+            MDIconButton:
+                icon: "cog-outline"
+                on_release: root.go_settings()
+
+
+<DocumentListItem>:
+    orientation: "horizontal"
+    size_hint_y: None
+    height: dp(72)
+    padding: dp(12), dp(4)
+    spacing: dp(12)
+
+    MDIcon:
+        icon: root.type_icon
+        theme_text_color: "Primary"
+        size_hint_x: None
+        width: dp(32)
+        pos_hint: {"center_y": 0.5}
+
+    MDBoxLayout:
+        orientation: "vertical"
+
+        MDLabel:
+            text: root.doc_name
+            font_style: "Subtitle1"
+            shorten: True
+            shorten_from: "right"
+
+        MDLabel:
+            text: root.doc_meta
+            theme_text_color: "Secondary"
+            font_style: "Caption"
+
+    MDIconButton:
+        icon: "dots-vertical"
+        on_release: root.open_menu(self)

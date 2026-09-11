@@ -1,0 +1,40 @@
+name: Build Android APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Required by camera4kivy - buildozer.spec's p4a.hook points at
+      # camerax_provider/gradle_options.py, which only exists once this
+      # repo is cloned alongside buildozer.spec. Without this step the
+      # build fails immediately on every run.
+      - name: Fetch camera4kivy's CameraX provider
+        run: |
+          git clone https://github.com/Android-for-Python/camerax_provider.git
+          rm -rf camerax_provider/.git
+
+      - name: Build APK with Buildozer
+        uses: kivy/buildozer-action@master
+        with:
+          command: buildozer android debug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: bin/*.apk
