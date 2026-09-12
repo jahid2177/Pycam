@@ -1,68 +1,142 @@
 [app]
-title = Document Scanner
-package.name = camscannerpython
-package.domain = org.example
+
+# --------------------------------------------------
+# APP INFORMATION
+# --------------------------------------------------
+
+title = Pycam
+
+package.name = pycam
+package.domain = com.jahid2177
+
+version = 1.0.0
+
+
+# --------------------------------------------------
+# SOURCE
+# --------------------------------------------------
 
 source.dir = .
-source.include_exts = py,png,jpg,jpeg,kv,atlas,json,txt,ttf,traineddata
 
-version = 0.1.0
+source.include_exts = py,kv,png,jpg,jpeg,webp,atlas,json,txt,ttf,otf,xml
 
-# p4a recipe names (NOT pip package names - e.g. "opencv" not
-# "opencv-python-headless"). Keep this in sync with requirements.txt
-# when adding new dependencies.
+source.exclude_dirs = .git,.github,.buildozer,bin,__pycache__,venv,.venv
+
+source.exclude_patterns = *.pyc,*.pyo,*.log
+
+
+# --------------------------------------------------
+# PYTHON / KIVY REQUIREMENTS
+# --------------------------------------------------
+
 requirements = python3,kivy==2.3.0,kivymd==1.2.0,opencv,numpy,pillow,pyjnius,camera4kivy,androidstorage4kivy
 
+
+# --------------------------------------------------
+# SCREEN
+# --------------------------------------------------
+
 orientation = portrait
+
 fullscreen = 0
 
-icon.filename = %(source.dir)s/assets/icons/app_icon.png
 
-# --- Android specifics ---------------------------------------------------
+# --------------------------------------------------
+# ANDROID
+# --------------------------------------------------
 
-android.permissions = CAMERA
-# READ_MEDIA_IMAGES/VIDEO deliberately NOT requested: nothing in this
-# app reads from the shared media library (no gallery picker) - every
-# image the app touches lives in its own app-private storage
-# (StorageManager) or is handed to androidstorage4kivy for sharing,
-# neither of which needs those permissions. Requesting permissions the
-# app doesn't use is worth avoiding on its own merits, not just Play
-# Store review.
-
-# camera4kivy's camerax_provider imports Android packages that currently
-# constrain this to API 33 - do not bump without checking the provider's
-# compatibility notes first.
 android.api = 33
+
 android.minapi = 24
-android.ndk = 25b
-android.archs = arm64-v8a, armeabi-v7a
-android.allow_backup = True
 
-# Required because every third-party Android dependency this app uses
-# (CameraX, ML Kit, Tesseract4Android, androidstorage4kivy) is built on
-# AndroidX - without this, expect "duplicate class" / "class not found"
-# errors at build or runtime.
-android.enable_androidx = True
+android.ndk = 28c
 
-# Required by camera4kivy: injects the CameraX gradle dependencies and
-# native provider sources. Run this once before building:
-#   git clone https://github.com/Android-for-Python/camerax_provider.git
-#   rm -rf camerax_provider/.git
-# so that ./camerax_provider/ sits next to this buildozer.spec.
+android.ndk_api = 24
+
+android.archs = arm64-v8a
+
+
+# --------------------------------------------------
+# ANDROID PERMISSIONS
+# --------------------------------------------------
+
+android.permissions = CAMERA,INTERNET,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,READ_MEDIA_IMAGES,READ_MEDIA_VIDEO
+
+
+# --------------------------------------------------
+# ANDROID STORAGE
+# --------------------------------------------------
+
+android.private_storage = True
+
+
+# --------------------------------------------------
+# ANDROID ACTIVITY
+# --------------------------------------------------
+
+android.entrypoint = org.kivy.android.PythonActivity
+
+android.activity_class_name = org.kivy.android.PythonActivity
+
+
+# --------------------------------------------------
+# PYTHON-FOR-ANDROID
+# --------------------------------------------------
+
+p4a.bootstrap = sdl2
+
+p4a.branch = master
+
 p4a.hook = camerax_provider/gradle_options.py
 
-# OCR (step 12-13): ML Kit for English (Latin script), Tesseract4Android
-# for Bengali (ML Kit has no Bengali support at all - see README).
-# Tesseract4Android is only on JitPack, not Google's/Maven Central's
-# default repos, so it needs its own repository line.
-android.gradle_repositories = https://jitpack.io
-android.gradle_dependencies = com.google.android.gms:play-services-mlkit-text-recognition:19.0.1, cz.adaptech.tesseract4android:tesseract4android:4.9.0
 
-# python-for-android sometimes needs this bumped when opencv/pyjnius
-# recipes lag behind the latest p4a release - pin explicitly if a CI
-# build breaks after a p4a update.
-# p4a.branch = develop
+# --------------------------------------------------
+# ANDROID BUILD OPTIONS
+# --------------------------------------------------
+
+android.copy_libs = 1
+
+android.accept_sdk_license = True
+
+
+# --------------------------------------------------
+# APP BACKUP
+# --------------------------------------------------
+
+android.allow_backup = False
+
+
+# --------------------------------------------------
+# LOGCAT / DEBUG
+# --------------------------------------------------
+
+android.logcat_filters = *:S python:D
+
+
+# --------------------------------------------------
+# IOS - NOT USED
+# --------------------------------------------------
+
+ios.kivy_ios_url = https://github.com/kivy/kivy-ios
+
+ios.kivy_ios_branch = master
+
+
+# --------------------------------------------------
+# OSX - NOT USED
+# --------------------------------------------------
+
+osx.python_version = 3
+
+osx.kivy_version = 2.3.0
+
+
+# --------------------------------------------------
+# BUILD
+# --------------------------------------------------
 
 [buildozer]
+
 log_level = 2
-warn_on_root = 1
+
+warn_on_root = 0
