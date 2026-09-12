@@ -11,7 +11,7 @@ version = 0.1.0
 # p4a recipe names (NOT pip package names - e.g. "opencv" not
 # "opencv-python-headless"). Keep this in sync with requirements.txt
 # when adding new dependencies.
-requirements = python3,kivy==2.3.0,kivymd==1.2.0,opencv,numpy,pillow,reportlab,pyjnius,camera4kivy,androidstorage4kivy
+requirements = python3,kivy==2.3.0,kivymd==1.2.0,opencv,numpy,pillow,pyjnius,camera4kivy,androidstorage4kivy
 
 orientation = portrait
 fullscreen = 0
