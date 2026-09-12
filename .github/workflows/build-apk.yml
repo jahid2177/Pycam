@@ -6,43 +6,273 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout
+      # ---------------------------------------------------------
+      # 1. Checkout project
+      # ---------------------------------------------------------
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Fetch camera4kivy's CameraX provider
-        run: |
-          git clone https://github.com/Android-for-Python/camerax_provider.git
-          rm -rf camerax_provider/.git
 
-      - name: Cache buildozer downloads
+      # ---------------------------------------------------------
+      # 2. Download CameraX Provider with retry
+      # ---------------------------------------------------------
+      - name: Fetch camera4kivy CameraX provider
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf camerax_provider
+
+          for attempt in 1 2 3 4 5; do
+
+            echo "CameraX provider download attempt: $attempt/5"
+
+            if git clone \
+              --depth 1 \
+              https://github.com/Android-for-Python/camerax_provider.git; then
+
+              echo "CameraX provider downloaded successfully."
+              rm -rf camerax_provider/.git
+              exit 0
+
+            fi
+
+            echo "Download failed."
+
+            if [ "$attempt" -lt 5 ]; then
+              WAIT_TIME=$((attempt * 10))
+              echo "Waiting ${WAIT_TIME} seconds before retry..."
+              sleep "$WAIT_TIME"
+              rm -rf camerax_provider
+            fi
+          done
+
+          echo "ERROR: Unable to download camerax_provider."
+          exit 1
+
+
+      # ---------------------------------------------------------
+      # 3. Cache Buildozer / python-for-android downloads
+      # ---------------------------------------------------------
+      - name: Cache Buildozer downloads
         uses: actions/cache@v4
         with:
-          path: .buildozer
-          key: buildozer-${{ hashFiles('buildozer.spec') }}
+          path: |
+            .buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-
+            buildozer-${{ runner.os }}-
 
-      - name: Pre-download freetype (savannah.gnu.org is flaky)
+
+      # ---------------------------------------------------------
+      # 4. Prepare download directories
+      # ---------------------------------------------------------
+      - name: Prepare Buildozer directories
+        shell: bash
         run: |
+          mkdir -p .buildozer/android/platform/build-arm64-v8a_armeabi-v7a/packages
           mkdir -p .buildozer/android/platform/build-arm64-v8a_armeabi-v7a/packages/freetype
-          curl -L --retry 15 --retry-delay 5 --retry-all-errors \
-            -o .buildozer/android/platform/build-arm64-v8a_armeabi-v7a/packages/freetype/freetype-2.14.1.tar.gz \
-            https://download.savannah.gnu.org/releases/freetype/freetype-2.14.1.tar.gz
 
-      - name: Build APK with Buildozer (official Docker image)
+
+      # ---------------------------------------------------------
+      # 5. Pre-download FreeType
+      # Savannah occasionally returns HTTP 502
+      # ---------------------------------------------------------
+      - name: Pre-download FreeType
+        shell: bash
         run: |
-          docker run --rm \
-            --entrypoint bash \
-            -v "${{ github.workspace }}:/home/user/hostcwd" \
-            kivy/buildozer -c "yes | buildozer android debug"
+          set -e
 
+          FREETYPE_DIR=".buildozer/android/platform/build-arm64-v8a_armeabi-v7a/packages/freetype"
+          FREETYPE_FILE="$FREETYPE_DIR/freetype-2.14.1.tar.gz"
+
+          mkdir -p "$FREETYPE_DIR"
+
+          # Remove broken/zero-byte download
+          if [ -f "$FREETYPE_FILE" ] && [ ! -s "$FREETYPE_FILE" ]; then
+            rm -f "$FREETYPE_FILE"
+          fi
+
+          if [ -s "$FREETYPE_FILE" ]; then
+            echo "FreeType already exists in cache."
+            ls -lh "$FREETYPE_FILE"
+            exit 0
+          fi
+
+          echo "Downloading FreeType 2.14.1..."
+
+          curl \
+            --fail \
+            --location \
+            --retry 20 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --max-time 600 \
+            --output "$FREETYPE_FILE" \
+            "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.1.tar.gz"
+
+          if [ ! -s "$FREETYPE_FILE" ]; then
+            echo "ERROR: FreeType download failed."
+            rm -f "$FREETYPE_FILE"
+            exit 1
+          fi
+
+          echo "FreeType downloaded successfully:"
+          ls -lh "$FREETYPE_FILE"
+
+
+      # ---------------------------------------------------------
+      # 6. Pull Buildozer Docker image with retry
+      # ---------------------------------------------------------
+      - name: Pull Buildozer Docker image
+        shell: bash
+        run: |
+          set -e
+
+          for attempt in 1 2 3 4 5; do
+
+            echo "Docker image pull attempt: $attempt/5"
+
+            if docker pull kivy/buildozer; then
+              echo "Buildozer Docker image ready."
+              exit 0
+            fi
+
+            if [ "$attempt" -lt 5 ]; then
+              WAIT_TIME=$((attempt * 10))
+              echo "Waiting ${WAIT_TIME} seconds..."
+              sleep "$WAIT_TIME"
+            fi
+
+          done
+
+          echo "ERROR: Failed to pull kivy/buildozer image."
+          exit 1
+
+
+      # ---------------------------------------------------------
+      # 7. Build APK
+      #
+      # Important:
+      # python-for-android sometimes gets temporary HTTP
+      # 502 / 503 / timeout errors.
+      #
+      # Retry complete build automatically.
+      # ---------------------------------------------------------
+      - name: Build APK with Buildozer
+        id: build_apk
+        shell: bash
+        run: |
+          set +e
+
+          MAX_ATTEMPTS=4
+
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+
+            echo ""
+            echo "======================================================"
+            echo " Buildozer build attempt $attempt/$MAX_ATTEMPTS"
+            echo "======================================================"
+            echo ""
+
+            docker run --rm \
+              --entrypoint bash \
+              -v "${{ github.workspace }}:/home/user/hostcwd" \
+              -w /home/user/hostcwd \
+              kivy/buildozer \
+              -lc "yes | buildozer -v android debug" \
+              2>&1 | tee "build-attempt-${attempt}.log"
+
+            BUILD_STATUS=${PIPESTATUS[0]}
+
+            if [ "$BUILD_STATUS" -eq 0 ]; then
+
+              echo ""
+              echo "======================================================"
+              echo " APK BUILD SUCCESSFUL"
+              echo "======================================================"
+
+              exit 0
+            fi
+
+            echo ""
+            echo "Build attempt $attempt failed."
+            echo ""
+
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+
+              # Longer delay for temporary server/network errors
+              WAIT_TIME=$((attempt * 30))
+
+              echo "Possible temporary dependency/network failure."
+              echo "Waiting ${WAIT_TIME} seconds before retry..."
+
+              sleep "$WAIT_TIME"
+
+            fi
+
+          done
+
+          echo ""
+          echo "======================================================"
+          echo " ERROR: APK build failed after $MAX_ATTEMPTS attempts."
+          echo "======================================================"
+
+          exit 1
+
+
+      # ---------------------------------------------------------
+      # 8. Display generated APK information
+      # ---------------------------------------------------------
+      - name: Verify generated APK
+        if: success()
+        shell: bash
+        run: |
+          echo "Generated APK files:"
+
+          find bin -type f -name "*.apk" -print -exec ls -lh {} \;
+
+          APK_COUNT=$(find bin -type f -name "*.apk" | wc -l)
+
+          if [ "$APK_COUNT" -eq 0 ]; then
+            echo "ERROR: Build completed but APK was not found."
+            exit 1
+          fi
+
+
+      # ---------------------------------------------------------
+      # 9. Upload APK
+      # ---------------------------------------------------------
       - name: Upload APK artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
           path: bin/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+
+      # ---------------------------------------------------------
+      # 10. Upload build logs when build fails
+      # ---------------------------------------------------------
+      - name: Upload Buildozer error logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildozer-error-logs
+          path: |
+            build-attempt-*.log
+            .buildozer/android/platform/build-*/build/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
