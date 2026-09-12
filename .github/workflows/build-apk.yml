@@ -6,141 +6,306 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build Pycam APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
 
     steps:
+      # ------------------------------------------------------------
+      # CHECKOUT
+      # ------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ------------------------------------------------------------
+      # JAVA
+      # ------------------------------------------------------------
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Python
+      # ------------------------------------------------------------
+      # PYTHON
+      # p4a master is most reliable with Python 3.12 on Ubuntu 24.04.
+      # ------------------------------------------------------------
+      - name: Setup Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.12"
+          cache: "pip"
 
+      # ------------------------------------------------------------
+      # SYSTEM DEPENDENCIES
+      # ------------------------------------------------------------
       - name: Install Linux dependencies
+        shell: bash
         run: |
+          set -euxo pipefail
+
           sudo apt-get update
+
           sudo apt-get install -y \
             git \
             zip \
             unzip \
+            curl \
+            wget \
             autoconf \
             automake \
+            autopoint \
+            gettext \
             libtool \
             libltdl-dev \
             pkg-config \
             zlib1g-dev \
             libffi-dev \
             libssl-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libtinfo6 \
             cmake \
-            ninja-build
+            ninja-build \
+            build-essential
 
-      - name: Install Buildozer
+      # ------------------------------------------------------------
+      # RUST
+      # Some current p4a recipes may need Rust.
+      # ------------------------------------------------------------
+      - name: Install Rust
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install buildozer cython
+          set -euxo pipefail
 
-      - name: Verify buildozer.spec
+          if ! command -v rustc >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal
+          fi
+
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+          if [ -f "$HOME/.cargo/env" ]; then
+            source "$HOME/.cargo/env"
+          fi
+
+          rustc --version || true
+          cargo --version || true
+
+      # ------------------------------------------------------------
+      # BUILDOZER / CYTHON
+      # Do NOT install an unrestricted latest Cython here.
+      # ------------------------------------------------------------
+      - name: Install Buildozer toolchain
+        shell: bash
         run: |
-          echo "===== requirements ====="
-          grep "^requirements" buildozer.spec || true
+          set -euxo pipefail
 
-          echo "===== Android settings ====="
-          grep "android.api" buildozer.spec || true
-          grep "android.minapi" buildozer.spec || true
-          grep "android.ndk" buildozer.spec || true
-          grep "android.archs" buildozer.spec || true
+          python -m pip install --upgrade pip setuptools wheel
 
-      - name: Force correct Android settings
-        run: |
-          sed -i 's/android.ndk = 25b/android.ndk = 28c/g' buildozer.spec
+          # Stable combination for p4a master / Ubuntu 24.04.
+          python -m pip install "cython==0.29.34"
+          python -m pip install buildozer
 
-          sed -i \
-            's/android.archs = arm64-v8a, armeabi-v7a/android.archs = arm64-v8a/g' \
-            buildozer.spec
+          echo "===== Versions ====="
+          python --version
+          buildozer --version
+          cython --version
+          java -version
 
-          sed -i \
-            's/,reportlab//g' \
-            buildozer.spec
-
-          echo "===== Updated config ====="
-          grep "^requirements" buildozer.spec || true
-          grep "android.ndk" buildozer.spec || true
-          grep "android.archs" buildozer.spec || true
-
+      # ------------------------------------------------------------
+      # CAMERAX PROVIDER
+      # Required by Camera4Kivy on Android.
+      # ------------------------------------------------------------
       - name: Fetch CameraX provider
+        shell: bash
         run: |
+          set -euxo pipefail
+
           rm -rf camerax_provider
 
-          git clone \
+          git clone --depth 1 \
             https://github.com/Android-for-Python/camerax_provider.git \
             camerax_provider
 
           rm -rf camerax_provider/.git
 
-      - name: Download FreeType source
+          test -f camerax_provider/gradle_options.py
+
+          echo "CameraX provider is ready."
+
+      # ------------------------------------------------------------
+      # VERIFY CONFIGURATION
+      # ------------------------------------------------------------
+      - name: Verify buildozer.spec
+        shell: bash
         run: |
-          rm -rf /tmp/freetype-src
-          rm -rf /tmp/freetype-2.14.1
-          rm -f /tmp/freetype.tar.gz
+          set -euxo pipefail
 
-          curl -L \
-            --fail \
-            --retry 10 \
-            --retry-delay 5 \
-            --retry-all-errors \
-            -o /tmp/freetype.tar.gz \
-            "https://downloads.sourceforge.net/project/freetype/freetype2/2.14.1/freetype-2.14.1.tar.gz"
+          test -f buildozer.spec
 
-          tar -xzf /tmp/freetype.tar.gz -C /tmp
+          echo "===== requirements ====="
+          grep -E '^requirements[[:space:]]*=' buildozer.spec
 
-          mv /tmp/freetype-2.14.1 /tmp/freetype-src
+          echo "===== Android settings ====="
+          grep -E '^android\.api[[:space:]]*=' buildozer.spec
+          grep -E '^android\.minapi[[:space:]]*=' buildozer.spec
+          grep -E '^android\.ndk[[:space:]]*=' buildozer.spec
+          grep -E '^android\.ndk_api[[:space:]]*=' buildozer.spec
+          grep -E '^android\.archs[[:space:]]*=' buildozer.spec
 
-          chmod +x /tmp/freetype-src/configure
+          echo "===== p4a settings ====="
+          grep -E '^p4a\.bootstrap[[:space:]]*=' buildozer.spec
+          grep -E '^p4a\.branch[[:space:]]*=' buildozer.spec
+          grep -E '^p4a\.hook[[:space:]]*=' buildozer.spec
 
-          test -f /tmp/freetype-src/configure
+      # ------------------------------------------------------------
+      # CLEAN STALE PROJECT BUILD
+      #
+      # Do not reuse .buildozer from an older Python/NDK combination.
+      # ~/.buildozer/android/packages is intentionally retained by the
+      # cache below only for downloaded SDK/NDK/package archives.
+      # ------------------------------------------------------------
+      - name: Clean stale project build
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-          echo "FreeType source OK"
+          rm -rf .buildozer
+          rm -rf bin
+          mkdir -p bin
 
-      - name: Cache Buildozer
+      # ------------------------------------------------------------
+      # CACHE DOWNLOADS ONLY
+      #
+      # Do NOT cache the project's .buildozer directory because native
+      # objects built by another Python/Cython/NDK combination can break
+      # subsequent builds.
+      # ------------------------------------------------------------
+      - name: Cache Buildozer downloads
         uses: actions/cache@v4
         with:
           path: |
-            ~/.buildozer
-            .buildozer
-          key: android-build-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+            ~/.buildozer/android/packages
+          key: pycam-android-packages-v3-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            android-build-${{ runner.os }}-
+            pycam-android-packages-v3-${{ runner.os }}-
 
-      - name: Remove incompatible old NDK
+      # ------------------------------------------------------------
+      # ENVIRONMENT DIAGNOSTICS
+      # ------------------------------------------------------------
+      - name: Show Android environment
+        shell: bash
         run: |
-          rm -rf ~/.buildozer/android/platform/android-ndk-r25b
-          rm -rf .buildozer/android/platform/build-arm64-v8a_armeabi-v7a
+          set -euxo pipefail
 
+          echo "JAVA_HOME=$JAVA_HOME"
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
+          echo "ANDROID_NDK=${ANDROID_NDK:-}"
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-}"
+          echo "ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT:-}"
+
+          python --version
+          java -version
+
+      # ------------------------------------------------------------
+      # BUILD
+      #
+      # android.accept_sdk_license = True is set in buildozer.spec, so
+      # piping `yes` into Buildozer is unnecessary.
+      # PIPESTATUS preserves the real Buildozer exit code while tee
+      # writes the complete log to buildozer-full.log.
+      # ------------------------------------------------------------
       - name: Build APK
-        env:
-          P4A_freetype_DIR: /tmp/freetype-src
-          JAVA_HOME: ${{ env.JAVA_HOME }}
+        id: build_apk
+        shell: bash
         run: |
-          yes | buildozer -v android debug 2>&1 | tee buildozer-full.log
+          set +e
+          set -o pipefail
 
-      - name: Show build result
-        if: always()
+          buildozer -v android debug 2>&1 | tee buildozer-full.log
+
+          BUILD_EXIT=${PIPESTATUS[0]}
+
+          echo "build_exit_code=$BUILD_EXIT" >> "$GITHUB_OUTPUT"
+
+          if [ "$BUILD_EXIT" -ne 0 ]; then
+            echo "Buildozer failed with exit code $BUILD_EXIT"
+            exit "$BUILD_EXIT"
+          fi
+
+      # ------------------------------------------------------------
+      # SUCCESS DIAGNOSTICS
+      # ------------------------------------------------------------
+      - name: Show APK result
+        if: success()
+        shell: bash
         run: |
+          set -euxo pipefail
+
           echo "===== APK files ====="
-          find bin -type f -maxdepth 2 -print 2>/dev/null || true
+          find bin -maxdepth 2 -type f -print
 
-          echo "===== Last 150 log lines ====="
-          tail -n 150 buildozer-full.log 2>/dev/null || true
+          APK_COUNT="$(find bin -maxdepth 2 -type f -name '*.apk' | wc -l)"
 
+          if [ "$APK_COUNT" -lt 1 ]; then
+            echo "Build step finished but no APK was produced."
+            exit 1
+          fi
+
+      # ------------------------------------------------------------
+      # FAILURE DIAGNOSTICS
+      # ------------------------------------------------------------
+      - name: Extract useful build errors
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+
+          mkdir -p build-debug
+
+          if [ -f buildozer-full.log ]; then
+            cp buildozer-full.log build-debug/
+
+            echo "===== FIRST LIKELY ERRORS =====" \
+              | tee build-debug/error-summary.txt
+
+            grep -nEi \
+              '(^|[^a-z])(error:|fatal error:|exception|traceback|failed|failure|command failed|recipe .* failed|undefined reference|no such file|could not|cannot|not found)' \
+              buildozer-full.log \
+              | head -n 300 \
+              | tee -a build-debug/error-summary.txt || true
+
+            echo "" >> build-debug/error-summary.txt
+            echo "===== LAST 500 LOG LINES =====" \
+              >> build-debug/error-summary.txt
+
+            tail -n 500 buildozer-full.log \
+              >> build-debug/error-summary.txt || true
+          fi
+
+          # Copy common p4a command stdout/stderr files if they exist.
+          find .buildozer \
+            -type f \
+            \( -name 'e.stdout' -o -name 'e.stderr' -o -name '*.log' \) \
+            -print0 2>/dev/null \
+            | while IFS= read -r -d '' FILE; do
+                SAFE_NAME="$(echo "$FILE" | sed 's#^\./##; s#[/ ]#_#g')"
+                cp "$FILE" "build-debug/$SAFE_NAME" 2>/dev/null || true
+              done
+
+          echo "===== Error summary ====="
+          cat build-debug/error-summary.txt 2>/dev/null || true
+
+      # ------------------------------------------------------------
+      # APK ARTIFACT
+      # ------------------------------------------------------------
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
@@ -148,10 +313,18 @@ jobs:
           name: Pycam-Android-APK
           path: bin/*.apk
           if-no-files-found: error
+          retention-days: 30
 
-      - name: Upload build log on failure
+      # ------------------------------------------------------------
+      # FAILURE ARTIFACT
+      # ------------------------------------------------------------
+      - name: Upload build diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-error-log
-          path: buildozer-full.log
+          name: Pycam-build-error
+          path: |
+            buildozer-full.log
+            build-debug/**
+          if-no-files-found: warn
+          retention-days: 14
