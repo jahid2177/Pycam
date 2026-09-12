@@ -19,6 +19,21 @@ jobs:
           git clone https://github.com/Android-for-Python/camerax_provider.git
           rm -rf camerax_provider/.git
 
+      - name: Cache buildozer downloads
+        uses: actions/cache@v4
+        with:
+          path: .buildozer
+          key: buildozer-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-
+
+      - name: Pre-download freetype (savannah.gnu.org is flaky)
+        run: |
+          mkdir -p .buildozer/android/platform/build-arm64-v8a_armeabi-v7a/packages/freetype
+          curl -L --retry 15 --retry-delay 5 --retry-all-errors \
+            -o .buildozer/android/platform/build-arm64-v8a_armeabi-v7a/packages/freetype/freetype-2.14.1.tar.gz \
+            https://download.savannah.gnu.org/releases/freetype/freetype-2.14.1.tar.gz
+
       - name: Build APK with Buildozer (official Docker image)
         run: |
           docker run --rm \
