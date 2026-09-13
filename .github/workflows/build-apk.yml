@@ -16,34 +16,36 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      # ------------------------------------------------------------
+      # ============================================================
       # CHECKOUT
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # JAVA
-      # ------------------------------------------------------------
+      # ============================================================
+      # JAVA 17
+      # ============================================================
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # ------------------------------------------------------------
-      # PYTHON
-      # p4a master is most reliable with Python 3.12 on Ubuntu 24.04.
-      # ------------------------------------------------------------
+      # ============================================================
+      # HOST PYTHON
+      #
+      # This is the Python used to run Buildozer itself.
+      # Android target Python is pinned separately in buildozer.spec.
+      # ============================================================
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
+          cache: pip
 
-      # ------------------------------------------------------------
-      # SYSTEM DEPENDENCIES
-      # ------------------------------------------------------------
+      # ============================================================
+      # LINUX BUILD DEPENDENCIES
+      # ============================================================
       - name: Install Linux dependencies
         shell: bash
         run: |
@@ -74,10 +76,9 @@ jobs:
             ninja-build \
             build-essential
 
-      # ------------------------------------------------------------
+      # ============================================================
       # RUST
-      # Some current p4a recipes may need Rust.
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Install Rust
         shell: bash
         run: |
@@ -94,34 +95,34 @@ jobs:
             source "$HOME/.cargo/env"
           fi
 
-          rustc --version || true
-          cargo --version || true
+          rustc --version
+          cargo --version
 
-      # ------------------------------------------------------------
-      # BUILDOZER / CYTHON
-      # Do NOT install an unrestricted latest Cython here.
-      # ------------------------------------------------------------
+      # ============================================================
+      # BUILDOZER + CYTHON
+      #
+      # Kivy 2.3.x is known to work with Cython 3.0.11.
+      # Do not install unrestricted latest Cython.
+      # ============================================================
       - name: Install Buildozer toolchain
         shell: bash
         run: |
           set -euxo pipefail
 
           python -m pip install --upgrade pip setuptools wheel
+          python -m pip install "cython==3.0.11"
+          python -m pip install --upgrade buildozer
 
-          # Stable combination for p4a master / Ubuntu 24.04.
-          python -m pip install "cython==0.29.34"
-          python -m pip install buildozer
-
-          echo "===== Versions ====="
+          echo "===== Host tool versions ====="
           python --version
-          buildozer --version
+          python -m pip --version
           cython --version
+          buildozer --version
           java -version
 
-      # ------------------------------------------------------------
+      # ============================================================
       # CAMERAX PROVIDER
-      # Required by Camera4Kivy on Android.
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Fetch CameraX provider
         shell: bash
         run: |
@@ -137,11 +138,11 @@ jobs:
 
           test -f camerax_provider/gradle_options.py
 
-          echo "CameraX provider is ready."
+          echo "CameraX provider OK"
 
-      # ------------------------------------------------------------
-      # VERIFY CONFIGURATION
-      # ------------------------------------------------------------
+      # ============================================================
+      # VERIFY BUILD CONFIG
+      # ============================================================
       - name: Verify buildozer.spec
         shell: bash
         run: |
@@ -149,79 +150,61 @@ jobs:
 
           test -f buildozer.spec
 
-          echo "===== requirements ====="
+          echo "===== Requirements ====="
           grep -E '^requirements[[:space:]]*=' buildozer.spec
 
-          echo "===== Android settings ====="
+          echo "===== Android ====="
           grep -E '^android\.api[[:space:]]*=' buildozer.spec
           grep -E '^android\.minapi[[:space:]]*=' buildozer.spec
           grep -E '^android\.ndk[[:space:]]*=' buildozer.spec
           grep -E '^android\.ndk_api[[:space:]]*=' buildozer.spec
           grep -E '^android\.archs[[:space:]]*=' buildozer.spec
 
-          echo "===== p4a settings ====="
-          grep -E '^p4a\.bootstrap[[:space:]]*=' buildozer.spec
+          echo "===== python-for-android ====="
           grep -E '^p4a\.branch[[:space:]]*=' buildozer.spec
+          grep -E '^p4a\.bootstrap[[:space:]]*=' buildozer.spec
           grep -E '^p4a\.hook[[:space:]]*=' buildozer.spec
 
-      # ------------------------------------------------------------
-      # CLEAN STALE PROJECT BUILD
+          echo "===== Critical Python pin check ====="
+
+          grep -q 'python3==3.12.11' buildozer.spec
+          grep -q 'hostpython3==3.12.11' buildozer.spec
+
+      # ============================================================
+      # CLEAN EVERYTHING THAT MAY CONTAIN PYTHON 3.14 OUTPUT
       #
-      # Do not reuse .buildozer from an older Python/NDK combination.
-      # ~/.buildozer/android/packages is intentionally retained by the
-      # cache below only for downloaded SDK/NDK/package archives.
-      # ------------------------------------------------------------
-      - name: Clean stale project build
+      # This is essential after the failed 3.14.2 build.
+      # ============================================================
+      - name: Remove stale Android build
         shell: bash
         run: |
           set -euxo pipefail
 
           rm -rf .buildozer
           rm -rf bin
+
+          # Remove old downloaded CPython 3.14 archives/markers if a
+          # previous Actions cache contains them.
+          rm -rf ~/.buildozer/android/packages/hostpython3
+          rm -rf ~/.buildozer/android/packages/python3
+
           mkdir -p bin
 
-      # ------------------------------------------------------------
-      # CACHE DOWNLOADS ONLY
+      # ============================================================
+      # CACHE ONLY GENERIC ANDROID DOWNLOADS
       #
-      # Do NOT cache the project's .buildozer directory because native
-      # objects built by another Python/Cython/NDK combination can break
-      # subsequent builds.
-      # ------------------------------------------------------------
-      - name: Cache Buildozer downloads
+      # We deliberately do not cache the local .buildozer build tree.
+      # ============================================================
+      - name: Cache Android downloads
         uses: actions/cache@v4
         with:
           path: |
             ~/.buildozer/android/packages
-          key: pycam-android-packages-v3-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
-          restore-keys: |
-            pycam-android-packages-v3-${{ runner.os }}-
+          key: pycam-packages-python312-v4-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
 
-      # ------------------------------------------------------------
-      # ENVIRONMENT DIAGNOSTICS
-      # ------------------------------------------------------------
-      - name: Show Android environment
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "JAVA_HOME=$JAVA_HOME"
-          echo "ANDROID_HOME=${ANDROID_HOME:-}"
-          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
-          echo "ANDROID_NDK=${ANDROID_NDK:-}"
-          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME:-}"
-          echo "ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT:-}"
-
-          python --version
-          java -version
-
-      # ------------------------------------------------------------
+      # ============================================================
       # BUILD
-      #
-      # android.accept_sdk_license = True is set in buildozer.spec, so
-      # piping `yes` into Buildozer is unnecessary.
-      # PIPESTATUS preserves the real Buildozer exit code while tee
-      # writes the complete log to buildozer-full.log.
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Build APK
         id: build_apk
         shell: bash
@@ -236,13 +219,34 @@ jobs:
           echo "build_exit_code=$BUILD_EXIT" >> "$GITHUB_OUTPUT"
 
           if [ "$BUILD_EXIT" -ne 0 ]; then
-            echo "Buildozer failed with exit code $BUILD_EXIT"
+            echo "Build failed with exit code: $BUILD_EXIT"
             exit "$BUILD_EXIT"
           fi
 
-      # ------------------------------------------------------------
-      # SUCCESS DIAGNOSTICS
-      # ------------------------------------------------------------
+      # ============================================================
+      # VERIFY THAT TARGET PYTHON WAS REALLY 3.12
+      # ============================================================
+      - name: Verify target Python version
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          echo "===== Python download/version evidence ====="
+
+          grep -nE \
+            'cpython-3\.(12|13|14)|v3\.(12|13|14)\.[0-9]+\.tar\.gz|python3\.(12|13|14)' \
+            buildozer-full.log \
+            | head -n 100 || true
+
+          if grep -qE 'v3\.14\.[0-9]+\.tar\.gz|cpython-3\.14|python3\.14' buildozer-full.log; then
+            echo "ERROR: Python 3.14 was selected unexpectedly."
+            exit 1
+          fi
+
+      # ============================================================
+      # APK RESULT
+      # ============================================================
       - name: Show APK result
         if: success()
         shell: bash
@@ -250,19 +254,19 @@ jobs:
           set -euxo pipefail
 
           echo "===== APK files ====="
-          find bin -maxdepth 2 -type f -print
+          find bin -maxdepth 2 -type f -name '*.apk' -print
 
           APK_COUNT="$(find bin -maxdepth 2 -type f -name '*.apk' | wc -l)"
 
           if [ "$APK_COUNT" -lt 1 ]; then
-            echo "Build step finished but no APK was produced."
+            echo "No APK produced."
             exit 1
           fi
 
-      # ------------------------------------------------------------
-      # FAILURE DIAGNOSTICS
-      # ------------------------------------------------------------
-      - name: Extract useful build errors
+      # ============================================================
+      # ERROR EXTRACTION
+      # ============================================================
+      - name: Extract build diagnostics
         if: failure()
         shell: bash
         run: |
@@ -273,24 +277,30 @@ jobs:
           if [ -f buildozer-full.log ]; then
             cp buildozer-full.log build-debug/
 
-            echo "===== FIRST LIKELY ERRORS =====" \
-              | tee build-debug/error-summary.txt
+            {
+              echo "===== PYTHON VERSION ====="
 
-            grep -nEi \
-              '(^|[^a-z])(error:|fatal error:|exception|traceback|failed|failure|command failed|recipe .* failed|undefined reference|no such file|could not|cannot|not found)' \
-              buildozer-full.log \
-              | head -n 300 \
-              | tee -a build-debug/error-summary.txt || true
+              grep -nE \
+                'cpython-3\.(12|13|14)|v3\.(12|13|14)\.[0-9]+\.tar\.gz|python3\.(12|13|14)' \
+                buildozer-full.log \
+                | head -n 120 || true
 
-            echo "" >> build-debug/error-summary.txt
-            echo "===== LAST 500 LOG LINES =====" \
-              >> build-debug/error-summary.txt
+              echo
+              echo "===== FIRST LIKELY ERRORS ====="
 
-            tail -n 500 buildozer-full.log \
-              >> build-debug/error-summary.txt || true
+              grep -nEi \
+                'error:|fatal error:|exception|traceback|failed|failure|command failed|recipe .* failed|undefined reference|no such file|could not|cannot|not found' \
+                buildozer-full.log \
+                | head -n 400 || true
+
+              echo
+              echo "===== LAST 600 LINES ====="
+
+              tail -n 600 buildozer-full.log || true
+            } > build-debug/error-summary.txt
           fi
 
-          # Copy common p4a command stdout/stderr files if they exist.
+          # p4a may keep extra stdout/stderr files in nested directories.
           find .buildozer \
             -type f \
             \( -name 'e.stdout' -o -name 'e.stderr' -o -name '*.log' \) \
@@ -301,11 +311,11 @@ jobs:
               done
 
           echo "===== Error summary ====="
-          cat build-debug/error-summary.txt 2>/dev/null || true
+          sed -n '1,1000p' build-debug/error-summary.txt 2>/dev/null || true
 
-      # ------------------------------------------------------------
-      # APK ARTIFACT
-      # ------------------------------------------------------------
+      # ============================================================
+      # UPLOAD APK
+      # ============================================================
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
@@ -315,9 +325,9 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # ------------------------------------------------------------
-      # FAILURE ARTIFACT
-      # ------------------------------------------------------------
+      # ============================================================
+      # UPLOAD FAILURE LOGS
+      # ============================================================
       - name: Upload build diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
