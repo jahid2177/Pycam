@@ -13,7 +13,7 @@ jobs:
   build:
     name: Build Pycam APK
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 150
 
     steps:
       # ============================================================
@@ -33,9 +33,6 @@ jobs:
 
       # ============================================================
       # HOST PYTHON
-      #
-      # This is the Python used to run Buildozer itself.
-      # Android target Python is pinned separately in buildozer.spec.
       # ============================================================
       - name: Setup Python 3.12
         uses: actions/setup-python@v5
@@ -44,7 +41,7 @@ jobs:
           cache: pip
 
       # ============================================================
-      # LINUX BUILD DEPENDENCIES
+      # LINUX DEPENDENCIES
       # ============================================================
       - name: Install Linux dependencies
         shell: bash
@@ -99,10 +96,7 @@ jobs:
           cargo --version
 
       # ============================================================
-      # BUILDOZER + CYTHON
-      #
-      # Kivy 2.3.x is known to work with Cython 3.0.11.
-      # Do not install unrestricted latest Cython.
+      # BUILDOZER / CYTHON
       # ============================================================
       - name: Install Buildozer toolchain
         shell: bash
@@ -113,7 +107,7 @@ jobs:
           python -m pip install "cython==3.0.11"
           python -m pip install --upgrade buildozer
 
-          echo "===== Host tool versions ====="
+          echo "===== Versions ====="
           python --version
           python -m pip --version
           cython --version
@@ -122,6 +116,7 @@ jobs:
 
       # ============================================================
       # CAMERAX PROVIDER
+      # Retry clone in case GitHub has a temporary network error.
       # ============================================================
       - name: Fetch CameraX provider
         shell: bash
@@ -130,18 +125,34 @@ jobs:
 
           rm -rf camerax_provider
 
-          git clone --depth 1 \
-            https://github.com/Android-for-Python/camerax_provider.git \
-            camerax_provider
+          for ATTEMPT in 1 2 3 4; do
+            echo "CameraX clone attempt $ATTEMPT/4"
+
+            if git clone --depth 1 \
+              https://github.com/Android-for-Python/camerax_provider.git \
+              camerax_provider; then
+              break
+            fi
+
+            rm -rf camerax_provider
+
+            if [ "$ATTEMPT" -eq 4 ]; then
+              echo "CameraX provider download failed after 4 attempts."
+              exit 1
+            fi
+
+            SLEEP_TIME=$((ATTEMPT * 15))
+            echo "Retrying in ${SLEEP_TIME}s..."
+            sleep "$SLEEP_TIME"
+          done
 
           rm -rf camerax_provider/.git
-
           test -f camerax_provider/gradle_options.py
 
           echo "CameraX provider OK"
 
       # ============================================================
-      # VERIFY BUILD CONFIG
+      # VERIFY SPEC
       # ============================================================
       - name: Verify buildozer.spec
         shell: bash
@@ -160,94 +171,142 @@ jobs:
           grep -E '^android\.ndk_api[[:space:]]*=' buildozer.spec
           grep -E '^android\.archs[[:space:]]*=' buildozer.spec
 
-          echo "===== python-for-android ====="
+          echo "===== p4a ====="
           grep -E '^p4a\.branch[[:space:]]*=' buildozer.spec
           grep -E '^p4a\.bootstrap[[:space:]]*=' buildozer.spec
           grep -E '^p4a\.hook[[:space:]]*=' buildozer.spec
 
-          echo "===== Critical Python pin check ====="
-
+          echo "===== Required Python pin ====="
           grep -q 'python3==3.12.11' buildozer.spec
           grep -q 'hostpython3==3.12.11' buildozer.spec
 
       # ============================================================
-      # CLEAN EVERYTHING THAT MAY CONTAIN PYTHON 3.14 OUTPUT
+      # CLEAN OLD PROJECT BUILD
       #
-      # This is essential after the failed 3.14.2 build.
+      # Keep ~/.buildozer/android/packages so successfully downloaded
+      # packages survive between Buildozer retry attempts.
       # ============================================================
-      - name: Remove stale Android build
+      - name: Clean stale project build
         shell: bash
         run: |
           set -euxo pipefail
 
           rm -rf .buildozer
           rm -rf bin
-
-          # Remove old downloaded CPython 3.14 archives/markers if a
-          # previous Actions cache contains them.
-          rm -rf ~/.buildozer/android/packages/hostpython3
-          rm -rf ~/.buildozer/android/packages/python3
-
           mkdir -p bin
 
       # ============================================================
-      # CACHE ONLY GENERIC ANDROID DOWNLOADS
-      #
-      # We deliberately do not cache the local .buildozer build tree.
+      # PACKAGE DOWNLOAD CACHE
       # ============================================================
-      - name: Cache Android downloads
+      - name: Cache Android packages
         uses: actions/cache@v4
         with:
           path: |
             ~/.buildozer/android/packages
-          key: pycam-packages-python312-v4-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          key: pycam-android-python312-v5-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            pycam-android-python312-v5-${{ runner.os }}-
 
       # ============================================================
-      # BUILD
+      # BUILD WITH RETRIES
+      #
+      # p4a already retries a single HTTP download a few times.
+      # This outer loop retries the whole create/build operation,
+      # while retaining packages already downloaded successfully.
+      # This protects the build against temporary 502/503/504 errors.
       # ============================================================
-      - name: Build APK
+      - name: Build APK with network retry
         id: build_apk
         shell: bash
         run: |
           set +e
           set -o pipefail
 
-          buildozer -v android debug 2>&1 | tee buildozer-full.log
+          : > buildozer-full.log
 
-          BUILD_EXIT=${PIPESTATUS[0]}
+          MAX_ATTEMPTS=4
+          BUILD_OK=0
 
-          echo "build_exit_code=$BUILD_EXIT" >> "$GITHUB_OUTPUT"
+          for ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
+            echo "" | tee -a buildozer-full.log
+            echo "====================================================" | tee -a buildozer-full.log
+            echo " BUILDOZER BUILD ATTEMPT $ATTEMPT/$MAX_ATTEMPTS" | tee -a buildozer-full.log
+            echo "====================================================" | tee -a buildozer-full.log
 
-          if [ "$BUILD_EXIT" -ne 0 ]; then
-            echo "Build failed with exit code: $BUILD_EXIT"
-            exit "$BUILD_EXIT"
+            buildozer -v android debug 2>&1 \
+              | tee -a buildozer-full.log
+
+            BUILD_EXIT=${PIPESTATUS[0]}
+
+            if [ "$BUILD_EXIT" -eq 0 ]; then
+              BUILD_OK=1
+              echo "Build succeeded on attempt $ATTEMPT." \
+                | tee -a buildozer-full.log
+              break
+            fi
+
+            echo "Build attempt $ATTEMPT failed with exit code $BUILD_EXIT." \
+              | tee -a buildozer-full.log
+
+            # If this looks like a temporary network/server problem,
+            # preserve the downloaded packages and retry.
+            if grep -Ei \
+              'HTTP Error (429|500|502|503|504)|Bad Gateway|Service Unavailable|Gateway Timeout|Connection reset|Connection timed out|Temporary failure|RemoteDisconnected' \
+              buildozer-full.log >/dev/null 2>&1; then
+
+              if [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; then
+                SLEEP_TIME=$((ATTEMPT * 30))
+                echo "Temporary network/server error detected." \
+                  | tee -a buildozer-full.log
+                echo "Retrying complete Buildozer operation in ${SLEEP_TIME}s..." \
+                  | tee -a buildozer-full.log
+
+                sleep "$SLEEP_TIME"
+                continue
+              fi
+            fi
+
+            # Non-network build errors should not waste four complete
+            # build attempts.
+            echo "No retryable network error detected, or retry limit reached." \
+              | tee -a buildozer-full.log
+            break
+          done
+
+          echo "build_ok=$BUILD_OK" >> "$GITHUB_OUTPUT"
+
+          if [ "$BUILD_OK" -ne 1 ]; then
+            echo "Build failed." | tee -a buildozer-full.log
+            exit 1
           fi
 
       # ============================================================
-      # VERIFY THAT TARGET PYTHON WAS REALLY 3.12
+      # VERIFY TARGET PYTHON
       # ============================================================
-      - name: Verify target Python version
+      - name: Verify target Python
         if: always()
         shell: bash
         run: |
           set +e
 
-          echo "===== Python download/version evidence ====="
+          echo "===== Python version evidence ====="
 
           grep -nE \
             'cpython-3\.(12|13|14)|v3\.(12|13|14)\.[0-9]+\.tar\.gz|python3\.(12|13|14)' \
             buildozer-full.log \
-            | head -n 100 || true
+            | head -n 150 || true
 
-          if grep -qE 'v3\.14\.[0-9]+\.tar\.gz|cpython-3\.14|python3\.14' buildozer-full.log; then
-            echo "ERROR: Python 3.14 was selected unexpectedly."
+          if grep -qE \
+            'v3\.14\.[0-9]+\.tar\.gz|cpython-3\.14|python3\.14' \
+            buildozer-full.log; then
+            echo "ERROR: Android Python 3.14 was selected unexpectedly."
             exit 1
           fi
 
       # ============================================================
-      # APK RESULT
+      # APK CHECK
       # ============================================================
-      - name: Show APK result
+      - name: Verify APK
         if: success()
         shell: bash
         run: |
@@ -259,14 +318,14 @@ jobs:
           APK_COUNT="$(find bin -maxdepth 2 -type f -name '*.apk' | wc -l)"
 
           if [ "$APK_COUNT" -lt 1 ]; then
-            echo "No APK produced."
+            echo "Build completed but no APK was found."
             exit 1
           fi
 
       # ============================================================
-      # ERROR EXTRACTION
+      # FAILURE DIAGNOSTICS
       # ============================================================
-      - name: Extract build diagnostics
+      - name: Create build diagnostics
         if: failure()
         shell: bash
         run: |
@@ -278,29 +337,37 @@ jobs:
             cp buildozer-full.log build-debug/
 
             {
+              echo "===== DOWNLOAD / URL EVENTS ====="
+
+              grep -nEi \
+                'https?://|download|downloading|HTTP Error|Bad Gateway|retrying|fetch|wget|curl' \
+                buildozer-full.log \
+                | tail -n 500 || true
+
+              echo
               echo "===== PYTHON VERSION ====="
 
               grep -nE \
                 'cpython-3\.(12|13|14)|v3\.(12|13|14)\.[0-9]+\.tar\.gz|python3\.(12|13|14)' \
                 buildozer-full.log \
-                | head -n 120 || true
+                | head -n 150 || true
 
               echo
-              echo "===== FIRST LIKELY ERRORS ====="
+              echo "===== LIKELY ERRORS ====="
 
               grep -nEi \
-                'error:|fatal error:|exception|traceback|failed|failure|command failed|recipe .* failed|undefined reference|no such file|could not|cannot|not found' \
+                'error:|fatal error:|HTTP Error|Bad Gateway|exception|traceback|failed|failure|command failed|recipe .* failed|undefined reference|no such file|could not|cannot|not found' \
                 buildozer-full.log \
-                | head -n 400 || true
+                | tail -n 600 || true
 
               echo
-              echo "===== LAST 600 LINES ====="
+              echo "===== LAST 800 LINES ====="
 
-              tail -n 600 buildozer-full.log || true
+              tail -n 800 buildozer-full.log || true
             } > build-debug/error-summary.txt
           fi
 
-          # p4a may keep extra stdout/stderr files in nested directories.
+          # Save p4a's nested stdout/stderr/log files.
           find .buildozer \
             -type f \
             \( -name 'e.stdout' -o -name 'e.stderr' -o -name '*.log' \) \
@@ -310,8 +377,8 @@ jobs:
                 cp "$FILE" "build-debug/$SAFE_NAME" 2>/dev/null || true
               done
 
-          echo "===== Error summary ====="
-          sed -n '1,1000p' build-debug/error-summary.txt 2>/dev/null || true
+          echo "===== Error summary preview ====="
+          sed -n '1,1400p' build-debug/error-summary.txt 2>/dev/null || true
 
       # ============================================================
       # UPLOAD APK
@@ -326,7 +393,7 @@ jobs:
           retention-days: 30
 
       # ============================================================
-      # UPLOAD FAILURE LOGS
+      # UPLOAD FAILURE LOG
       # ============================================================
       - name: Upload build diagnostics
         if: failure()
