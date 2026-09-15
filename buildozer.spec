@@ -23,10 +23,10 @@ source.exclude_patterns = *.pyc,*.pyo,*.log
 #
 # IMPORTANT:
 # Kivy 2.3.0 officially supports Python through 3.12.
-# We explicitly pin BOTH target Python and hostpython to 3.12.11
-# so current python-for-android does not silently select Python 3.14.
+# We pin BOTH target Python and hostpython to 3.11.5 and pair them
+# with python-for-android v2024.01.21, whose Python recipe defaults to 3.11.5.
 # ================================================================
-requirements = python3==3.12.11,hostpython3==3.12.11,kivy==2.3.0,kivymd==1.2.0,pyjnius,numpy,pillow,opencv,camera4kivy,gestures4kivy,androidstorage4kivy
+requirements = python3==3.11.5,hostpython3==3.11.5,kivy==2.3.0,kivymd==1.2.0,pyjnius,numpy,pillow,opencv,camera4kivy,gestures4kivy,androidstorage4kivy
 
 
 # ================================================================
@@ -41,7 +41,7 @@ fullscreen = 0
 # ================================================================
 android.api = 33
 android.minapi = 24
-android.ndk = 28c
+android.ndk = 25b
 android.ndk_api = 24
 android.archs = arm64-v8a
 
@@ -64,7 +64,7 @@ android.activity_class_name = org.kivy.android.PythonActivity
 # PYTHON-FOR-ANDROID
 # ================================================================
 p4a.bootstrap = sdl2
-p4a.branch = master
+p4a.branch = v2024.01.21
 p4a.hook = camerax_provider/gradle_options.py
 
 
