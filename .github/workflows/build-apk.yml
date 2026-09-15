@@ -34,10 +34,10 @@ jobs:
       # ============================================================
       # HOST PYTHON
       # ============================================================
-      - name: Setup Python 3.12
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache: pip
 
       # ============================================================
@@ -225,8 +225,8 @@ jobs:
           grep -E '^p4a\.hook[[:space:]]*=' buildozer.spec
 
           echo "===== Python pin ====="
-          grep -q 'python3==3.12.11' buildozer.spec
-          grep -q 'hostpython3==3.12.11' buildozer.spec
+          grep -q 'python3==3.11.5' buildozer.spec
+          grep -q 'hostpython3==3.11.5' buildozer.spec
 
       # ============================================================
       # CLEAN OLD PROJECT BUILD
@@ -248,9 +248,9 @@ jobs:
         with:
           path: |
             ~/.buildozer/android/packages
-          key: pycam-python312-freetype-local-v6-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          key: pycam-python311-p4a20240121-freetype-local-v7-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            pycam-python312-freetype-local-v6-${{ runner.os }}-
+            pycam-python311-p4a20240121-freetype-local-v7-${{ runner.os }}-
 
       # ============================================================
       # BUILD
@@ -299,7 +299,7 @@ jobs:
 
           echo "===== Python evidence ====="
           grep -nE \
-            'Recipe python3:|Recipe hostpython3:|cpython-3\.(12|13|14)|python3\.(12|13|14)' \
+            'Recipe python3:|Recipe hostpython3:|cpython-3\.(11|12|13|14)|python3\.(11|12|13|14)' \
             buildozer-full.log \
             | head -n 150 || true
 
@@ -310,9 +310,9 @@ jobs:
             | head -n 250 || true
 
           if grep -qE \
-            'v3\.14\.[0-9]+\.tar\.gz|cpython-3\.14|python3\.14' \
+            'v3\.(12|13|14)\.[0-9]+\.tar\.gz|cpython-3\.(12|13|14)|python3\.(12|13|14)' \
             buildozer-full.log; then
-            echo "ERROR: Python 3.14 was selected unexpectedly."
+            echo "ERROR: Python 3.12+ was selected unexpectedly. Expected Python 3.11.5."
             exit 1
           fi
 
@@ -366,7 +366,7 @@ jobs:
               echo
               echo "===== PYTHON VERSION ====="
               grep -nE \
-                'Recipe python3:|Recipe hostpython3:|cpython-3\.(12|13|14)|python3\.(12|13|14)' \
+                'Recipe python3:|Recipe hostpython3:|cpython-3\.(11|12|13|14)|python3\.(11|12|13|14)' \
                 buildozer-full.log \
                 | head -n 200 || true
 
