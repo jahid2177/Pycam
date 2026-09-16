@@ -1,210 +1,400 @@
 """
-Camera bridge for the scanner screen, built on Camera4Kivy - a Kivy
-Preview widget backed by Android CameraX (native side lives in the
-`camerax_provider` hook referenced from buildozer.spec).
+Camera4Kivy bridge used by the scanner screen.
 
-Camera4Kivy's own repo is archived (as of 2023-11-13) but the API is
-stable and it remains the most direct maintained path from Kivy to
-CameraX without hand-writing a full PyJNIus/Java bridge; if it ever
-stops working with a newer Kivy/p4a we fall back to a hand-rolled
-Camera2 PyJNIus bridge, which would only require rewriting this one
-module - no other module in the app talks to the camera directly.
-
-This module owns:
-- connect/disconnect the physical camera
-- take a full-resolution photo to disk
-- real-time document-edge detection on preview frames (step 4) and
-  drawing the detected outline over the live preview
-- forwarding the detection result to `on_detection` so a later step
-  (5 - auto capture) can react to a stable, well-framed quadrilateral
-  without redoing any of this coordinate math
+Important Camera4Kivy API details:
+- filepath_callback belongs to connect_camera(), not capture_photo().
+- Android capture location must be "private" or "shared".
+- capture_photo() uses name=..., not name_fmt=....
+- enable_video=False reduces CameraX use-cases and improves compatibility
+  on devices that simultaneously run image analysis and photo capture.
 """
 
 import threading
+import time
+from typing import Optional
 
-import numpy as np
 import cv2
+import numpy as np
 
-from kivy.utils import platform
 from kivy.clock import Clock
 from kivy.graphics import Color, Line
 from kivy.metrics import dp
+from kivy.utils import platform
 
-from scanner.detector import DocumentDetector
+from scanner.detector import DocumentDetector, order_points
+
 
 CAMERA_AVAILABLE = True
 try:
     from camera4kivy import Preview
 except Exception:
     CAMERA_AVAILABLE = False
-    Preview = object  # lets DocumentCamera be imported/inspected on any platform
+    Preview = object
 
-# Analyze every Nth frame - Canny + contour search on every single
-# preview frame is unnecessary work; skipping frames keeps the preview
-# at full frame rate on low-end devices while the outline still tracks
-# smoothly since document movement between 2-3 frames is tiny.
+
 ANALYSIS_FRAME_SKIP = 2
+ANALYSIS_RESOLUTION = 720
 
-OUTLINE_COLOR = (0.20, 0.85, 0.35, 0.95)  # green - "document detected"
+OUTLINE_COLOR = (0.20, 0.85, 0.35, 0.98)
 OUTLINE_WIDTH = dp(3)
 
 
 class DocumentCamera(Preview):
-    """Subclass of camera4kivy.Preview.
-
-    `on_detection(quad_or_none, frame_size)` fires on the main thread
-    with either a (4, 2) array of corner points in ORIGINAL-frame pixel
-    coordinates plus that frame's (width, height), or (None, size) when
-    nothing is detected - this is what step 5's auto-capture stability
-    check consumes (it needs frame_size to turn pixel movement into a
-    resolution-independent ratio).
-    """
-
-    def __init__(self, on_detection=None, **kwargs):
+    def __init__(self, on_detection=None, on_camera_error=None, **kwargs):
         if not CAMERA_AVAILABLE:
             raise RuntimeError(
-                "camera4kivy is not installed/available on this platform. "
-                "Install it (`pip install camera4kivy`) and, for Android "
-                "builds, add the camerax_provider hook described in "
-                "buildozer.spec before using DocumentCamera."
+                "camera4kivy is not available. Install camera4kivy and "
+                "use the CameraX provider hook on Android."
             )
+
+        kwargs.setdefault("aspect_ratio", "4:3")
+        kwargs.setdefault("orientation", "same")
+        kwargs.setdefault("letterbox_color", (0, 0, 0, 1))
+
         super().__init__(**kwargs)
+
         self.on_detection = on_detection
+        self.on_camera_error = on_camera_error
 
         self._detector = DocumentDetector()
         self._capture_callback = None
+        self._capture_error_callback = None
+        self._capture_in_progress = False
         self._frame_counter = 0
 
         self._lock = threading.Lock()
-        self._canvas_quad = None  # last detected quad, already in canvas coords
+        self._canvas_quad = None
+        self._smoothed_quad: Optional[np.ndarray] = None
+        self._last_frame_size = (0, 0)
 
-    # ---- Lifecycle -----------------------------------------------------
+    # ------------------------------------------------------------------
+    # Camera lifecycle
+    # ------------------------------------------------------------------
 
     def start(self, analyze=True):
-        """Connect the physical camera. Call at least one frame after
-        the hosting screen enters (on_enter uses Clock.schedule_once
-        with timeout=0 to guarantee this)."""
-        self.connect_camera(
-            enable_analyze_pixels=analyze,
-            camera_id="0",  # back camera - documents are scanned facing away
-        )
+        try:
+            self.connect_camera(
+                camera_id="back" if platform == "android" else "0",
+                filepath_callback=self._on_captured,
+                enable_analyze_pixels=bool(analyze),
+                analyze_pixels_resolution=ANALYSIS_RESOLUTION,
+                enable_video=False,
+                enable_zoom_gesture=True,
+                enable_focus_gesture=True,
+            )
+        except Exception as exc:
+            self._notify_camera_error(
+                f"Could not start camera: {exc}"
+            )
 
     def stop(self):
-        """Disconnect the camera. Must be called on_leave / on_pause so
-        the app is a well-behaved camera citizen (spec requirement)."""
         try:
             self.disconnect_camera()
         except Exception:
             pass
+
         with self._lock:
             self._canvas_quad = None
+            self._smoothed_quad = None
 
-    # ---- Capture -----------------------------------------------------
+        self._capture_in_progress = False
+        self._capture_callback = None
+        self._capture_error_callback = None
 
-    def capture(self, subdir, on_saved):
-        """Take a full-resolution photo.
+    # ------------------------------------------------------------------
+    # Capture
+    # ------------------------------------------------------------------
 
-        `on_saved(path)` is called with the absolute file path once the
-        capture is written to disk - capture is async, this is the only
-        reliable completion signal per Camera4Kivy's own docs.
+    @property
+    def capture_in_progress(self) -> bool:
+        return self._capture_in_progress
+
+    def capture(self, subdir, on_saved, on_error=None):
         """
+        Start a full-resolution capture.
+
+        Camera4Kivy reports completion through the filepath_callback that
+        was registered in connect_camera(). We keep the per-capture app
+        callback here and dispatch it when Camera4Kivy reports the path.
+        """
+        if self._capture_in_progress:
+            return False
+
         self._capture_callback = on_saved
-        self.capture_photo(
-            location="internal",
-            subdir=subdir,
-            name_fmt="scan_{}.jpg",
-            filepath_callback=self._on_captured,
-        )
+        self._capture_error_callback = on_error
+        self._capture_in_progress = True
+
+        # Camera4Kivy automatically appends ".jpg".
+        unique_name = f"scan_{int(time.time() * 1000)}"
+
+        try:
+            self.capture_photo(
+                location="private",
+                subdir=str(subdir),
+                name=unique_name,
+            )
+            return True
+        except Exception as exc:
+            self._capture_in_progress = False
+            self._capture_callback = None
+
+            callback = self._capture_error_callback
+            self._capture_error_callback = None
+
+            if callback:
+                Clock.schedule_once(
+                    lambda dt, message=str(exc): callback(message), 0
+                )
+            else:
+                self._notify_camera_error(f"Capture failed: {exc}")
+
+            return False
 
     def _on_captured(self, path):
-        if self._capture_callback:
-            Clock.schedule_once(lambda dt: self._capture_callback(path), 0)
+        """
+        Camera4Kivy filepath_callback.
 
-    # ---- Camera4Kivy analysis hook -----------------------------------
-    # Runs on Camera4Kivy's analysis thread. Per Camera4Kivy's own
-    # guidance: do the analysis + coordinate transforms HERE, and only
-    # display the (already-computed) result in canvas_instructions_callback.
+        A valid private capture returns a real filesystem path. Empty or
+        warning-style callbacks are treated as capture failures instead
+        of sending an invalid path into OpenCV.
+        """
+        self._capture_in_progress = False
 
-    def analyze_pixels_callback(self, pixels, size, image_pos, image_scale, mirror):
-        self._frame_counter += 1
-        if self._frame_counter % ANALYSIS_FRAME_SKIP != 0:
+        saved_callback = self._capture_callback
+        error_callback = self._capture_error_callback
+
+        self._capture_callback = None
+        self._capture_error_callback = None
+
+        if isinstance(path, str) and path.strip():
+            clean_path = path.strip()
+
+            if saved_callback:
+                Clock.schedule_once(
+                    lambda dt, p=clean_path: saved_callback(p), 0
+                )
             return
 
-        frame_w, frame_h = size
+        message = "Camera did not return a saved photo path."
+        if error_callback:
+            Clock.schedule_once(
+                lambda dt, m=message: error_callback(m), 0
+            )
+        else:
+            self._notify_camera_error(message)
+
+    def _notify_camera_error(self, message: str):
+        if self.on_camera_error:
+            Clock.schedule_once(
+                lambda dt, m=str(message): self.on_camera_error(m), 0
+            )
+
+    # ------------------------------------------------------------------
+    # Live analysis
+    # ------------------------------------------------------------------
+
+    def analyze_pixels_callback(
+        self,
+        pixels,
+        size,
+        image_pos,
+        image_scale,
+        mirror,
+    ):
+        self._frame_counter += 1
+        if self._frame_counter % ANALYSIS_FRAME_SKIP:
+            return
+
         try:
-            rgba = np.frombuffer(pixels, dtype=np.uint8).reshape(frame_h, frame_w, 4)
-        except ValueError:
-            return  # buffer size didn't match (e.g. mid-reconfigure) - skip this frame
-        bgr = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+            frame_w, frame_h = int(size[0]), int(size[1])
+        except Exception:
+            return
 
-        quad = self._detector.detect(bgr)
+        if frame_w <= 0 or frame_h <= 0:
+            return
 
-        if quad is None:
+        try:
+            rgba = np.frombuffer(
+                pixels, dtype=np.uint8
+            ).reshape(frame_h, frame_w, 4)
+        except (ValueError, TypeError):
+            return
+
+        try:
+            bgr = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+            detected = self._detector.detect(bgr)
+        except Exception:
+            detected = None
+
+        self._last_frame_size = (frame_w, frame_h)
+
+        stable_quad = self._smooth_detection(detected, frame_w, frame_h)
+
+        if stable_quad is None:
             with self._lock:
                 self._canvas_quad = None
         else:
-            canvas_quad = self._to_canvas_coords(quad, frame_w, image_pos, image_scale, mirror)
+            canvas_quad = self._to_canvas_coords(
+                stable_quad,
+                frame_w,
+                frame_h,
+                image_pos,
+                image_scale,
+                mirror,
+            )
             with self._lock:
                 self._canvas_quad = canvas_quad
 
         if self.on_detection:
+            payload = None if stable_quad is None else stable_quad.copy()
             Clock.schedule_once(
-                lambda dt, q=quad, s=(frame_w, frame_h): self.on_detection(q, s), 0
+                lambda dt, q=payload, s=(frame_w, frame_h):
+                    self.on_detection(q, s),
+                0,
             )
 
+    def _smooth_detection(
+        self,
+        quad: Optional[np.ndarray],
+        frame_w: int,
+        frame_h: int,
+    ) -> Optional[np.ndarray]:
+        """
+        Light temporal smoothing removes the rapidly jumping outline.
+
+        If a detection suddenly moves too far, start from the new result
+        rather than dragging an old rectangle across the preview.
+        """
+        if quad is None:
+            self._smoothed_quad = None
+            return None
+
+        current = order_points(
+            np.asarray(quad, dtype=np.float32).reshape(4, 2)
+        )
+
+        if self._smoothed_quad is None:
+            self._smoothed_quad = current
+            return current
+
+        diagonal = (frame_w ** 2 + frame_h ** 2) ** 0.5
+        mean_move = float(
+            np.mean(
+                np.linalg.norm(
+                    current - self._smoothed_quad,
+                    axis=1,
+                )
+            )
+        )
+
+        if mean_move > diagonal * 0.12:
+            self._smoothed_quad = current
+            return current
+
+        # Lower alpha = steadier box. 0.32 still follows deliberate hand
+        # movement without the "dancing corners" effect.
+        alpha = 0.32
+        self._smoothed_quad = (
+            alpha * current
+            + (1.0 - alpha) * self._smoothed_quad
+        ).astype(np.float32)
+
+        return self._smoothed_quad
+
     @staticmethod
-    def _to_canvas_coords(quad, frame_w, image_pos, image_scale, mirror):
-        """Map detector output (original analysis-frame pixels) to
-        widget/canvas coordinates, per Camera4Kivy's documented contract:
-        annotation coordinates from analyze_pixels_callback are NEVER
-        auto-mirrored, so a mirrored preview must be corrected here."""
-        px, py = image_pos
+    def _to_canvas_coords(
+        quad,
+        frame_w,
+        frame_h,
+        image_pos,
+        image_scale,
+        mirror,
+    ):
+        """
+        Convert OpenCV top-left-origin image coordinates to Kivy's
+        bottom-left-origin canvas coordinates.
+
+        Camera4Kivy normally supplies scalar image_scale. Tuple/list
+        handling is included for providers/configurations that supply
+        independent X/Y scale.
+        """
+        px, py = float(image_pos[0]), float(image_pos[1])
+
+        if isinstance(image_scale, (tuple, list, np.ndarray)):
+            if len(image_scale) >= 2:
+                sx = float(image_scale[0])
+                sy = float(image_scale[1])
+            else:
+                sx = sy = float(image_scale[0])
+        else:
+            sx = sy = float(image_scale)
+
         points = []
         for x, y in quad:
+            x = float(x)
+            y = float(y)
+
             if mirror:
                 x = frame_w - x
-            points.append(px + x * image_scale)
-            points.append(py + y * image_scale)
+
+            # OpenCV: y=0 at top. Kivy canvas: y=0 at bottom.
+            canvas_x = px + x * sx
+            canvas_y = py + (frame_h - y) * sy
+
+            points.extend((canvas_x, canvas_y))
+
         return points
 
-    # ---- Camera4Kivy render hook ---------------------------------------
-    # Runs on the GL/render thread - only draws the last computed result,
-    # never recomputes anything (per Camera4Kivy's documented pattern).
+    # ------------------------------------------------------------------
+    # Render hook
+    # ------------------------------------------------------------------
 
     def canvas_instructions_callback(self, texture, tex_size, tex_pos):
         with self._lock:
-            quad = self._canvas_quad
+            quad = None if self._canvas_quad is None else list(self._canvas_quad)
+
         if not quad:
             return
+
         Color(*OUTLINE_COLOR)
-        Line(points=quad, width=OUTLINE_WIDTH, close=True)
+        Line(
+            points=quad,
+            width=OUTLINE_WIDTH,
+            close=True,
+            joint="round",
+        )
 
 
 def camera_permission_granted() -> bool:
-    """Returns whether CAMERA permission is currently granted.
-    Always True off-Android (desktop dev uses the OS camera directly)."""
     if platform != "android":
         return True
-    try:
-        from android.permissions import check_permission, Permission
 
-        return check_permission(Permission.CAMERA)
+    try:
+        from android.permissions import Permission, check_permission
+        return bool(check_permission(Permission.CAMERA))
     except Exception:
         return False
 
 
 def request_camera_permission(on_result):
-    """Request CAMERA permission. `on_result(granted: bool)` fires once
-    the user answers the system dialog. No-op (immediate True) off-Android."""
     if platform != "android":
         on_result(True)
         return
+
     try:
-        from android.permissions import request_permissions, Permission
+        from android.permissions import Permission, request_permissions
 
         def _callback(permissions, grants):
-            on_result(bool(grants) and all(grants))
+            granted = bool(grants) and all(bool(v) for v in grants)
+            Clock.schedule_once(
+                lambda dt: on_result(granted), 0
+            )
 
-        request_permissions([Permission.CAMERA], _callback)
+        request_permissions(
+            [Permission.CAMERA],
+            _callback,
+        )
     except Exception:
-        on_result(False)
+        Clock.schedule_once(
+            lambda dt: on_result(False), 0
+        )
