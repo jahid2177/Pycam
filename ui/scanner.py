@@ -1,19 +1,13 @@
 """
-Scanner screen - live camera preview and page capture.
+Scanner screen controller.
 
-Owns: permission flow, connecting/disconnecting DocumentCamera, and
-turning a shutter press into a saved file added to the current
-scanning session (`app.active_session_pages`). Shows live
-document-edge detection status (green outline drawn by DocumentCamera,
-reflected here in the hint label) and drives auto-capture: once a
-detected document has held still long enough, the shutter fires on its
-own - the manual shutter button still works at any time. After every
-capture, hands the raw photo to `image_processing.perspective` for
-perspective correction (step 6) before continuing to the preview
-screen - the actual warp math lives there, not here.
-
-Does NOT own: the perspective-correction math itself (image_processing
-module) or the multi-page editor (step 9).
+Changes in this version:
+- Capture is guarded against double taps / auto+manual races.
+- Camera errors are shown in the UI instead of crashing the app.
+- Single / Batch capture modes.
+- Scan / ID Cards modes matching the provided scanner UI.
+- ID Cards mode guides the user through front/back captures.
+- Stable auto-capture uses full quadrilateral movement, not only centroid.
 """
 
 import os
@@ -21,208 +15,518 @@ import threading
 import time
 
 from kivy.clock import Clock
-from kivy.properties import StringProperty, ObjectProperty, BooleanProperty, NumericProperty
-from kivymd.uix.screen import MDScreen
+from kivy.properties import (
+    BooleanProperty,
+    NumericProperty,
+    ObjectProperty,
+    StringProperty,
+)
 from kivymd.app import MDApp
+from kivymd.uix.dialog import MDDialog
+from kivymd.uix.button import MDFlatButton
+from kivymd.uix.screen import MDScreen
 
+from image_processing.perspective import correct_document_file
+from scanner.auto_capture import AutoCaptureController
 from scanner.camera import (
-    DocumentCamera,
     CAMERA_AVAILABLE,
+    DocumentCamera,
     camera_permission_granted,
     request_camera_permission,
 )
-from scanner.auto_capture import AutoCaptureController
-from image_processing.perspective import correct_document_file
 
 
 class ScannerScreen(MDScreen):
     camera_container = ObjectProperty(None)
     permission_box = ObjectProperty(None)
     shutter_button = ObjectProperty(None)
-    flash_button = ObjectProperty(None)
     hint_label = ObjectProperty(None)
     top_bar = ObjectProperty(None)
     auto_ring = ObjectProperty(None)
+
     page_count_text = StringProperty("0 pages")
     document_detected = BooleanProperty(False)
     ring_progress = NumericProperty(0.0)
     auto_capture_enabled = BooleanProperty(True)
 
+    capture_mode = StringProperty("single")   # single | batch
+    scan_type = StringProperty("scan")        # scan | id_card
+    capture_busy = BooleanProperty(False)
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+
         self.camera_widget = None
         self._flash_on = False
-        self._auto_capture = AutoCaptureController(stability_duration=0.9)
+        self._auto_capture = AutoCaptureController(
+            stability_duration=1.15,
+            corner_movement_ratio=0.018,
+            centroid_movement_ratio=0.012,
+            max_area_change_ratio=0.08,
+            minimum_stable_updates=4,
+        )
 
-    # ---- Lifecycle -----------------------------------------------------
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def on_pre_enter(self, *args):
+        self.capture_busy = False
         self._update_page_count()
-        if self.hint_label:
-            self.hint_label.text = "Point the camera at a document"
-        # Only apply the saved default when starting a fresh session -
-        # once the user has toggled it mid-session, further pages keep
-        # whatever they chose rather than resetting on every re-entry.
+        self._auto_capture.reset()
+        self.ring_progress = 0.0
+
         app = MDApp.get_running_app()
         if not app.active_session_pages:
-            self.auto_capture_enabled = bool(app.prefs.get("auto_capture"))
+            self.auto_capture_enabled = bool(
+                app.prefs.get("auto_capture")
+            )
+            self.capture_mode = "single"
+            self.scan_type = "scan"
+
+        self._update_hint()
 
     def on_enter(self, *args):
         if not camera_permission_granted():
             self._show_permission_prompt()
             return
+
+        self._hide_permission_prompt()
         self._ensure_camera_widget()
-        # Connect one frame later so the widget has a size before
-        # Camera4Kivy tries to bind a preview surface to it.
-        Clock.schedule_once(lambda dt: self.camera_widget.start(analyze=True), 0)
+
+        if self.camera_widget is not None:
+            Clock.schedule_once(
+                lambda dt: self.camera_widget.start(analyze=True),
+                0.10,
+            )
 
     def on_leave(self, *args):
         if self.camera_widget:
             self.camera_widget.stop()
+
+        self.capture_busy = False
         self.document_detected = False
         self._auto_capture.reset()
         self.ring_progress = 0.0
 
-    # ---- Permission -----------------------------------------------------
+    # ------------------------------------------------------------------
+    # Permission
+    # ------------------------------------------------------------------
 
     def request_permission(self):
         request_camera_permission(self._on_permission_result)
 
     def _on_permission_result(self, granted: bool):
-        if granted:
-            self._hide_permission_prompt()
-            self._ensure_camera_widget()
-            Clock.schedule_once(lambda dt: self.camera_widget.start(analyze=True), 0)
-        else:
+        if not granted:
             self._show_permission_prompt()
+            return
+
+        self._hide_permission_prompt()
+        self._ensure_camera_widget()
+
+        if self.camera_widget is not None:
+            Clock.schedule_once(
+                lambda dt: self.camera_widget.start(analyze=True),
+                0.10,
+            )
 
     def _show_permission_prompt(self):
-        self.permission_box.opacity = 1
-        self.permission_box.disabled = False
-        self.shutter_button.disabled = True
+        if self.permission_box:
+            self.permission_box.opacity = 1
+            self.permission_box.disabled = False
+
+        if self.shutter_button:
+            self.shutter_button.disabled = True
 
     def _hide_permission_prompt(self):
-        self.permission_box.opacity = 0
-        self.permission_box.disabled = True
-        self.shutter_button.disabled = False
+        if self.permission_box:
+            self.permission_box.opacity = 0
+            self.permission_box.disabled = True
 
-    # ---- Camera setup -----------------------------------------------------
+        if self.shutter_button:
+            self.shutter_button.disabled = self.capture_busy
+
+    # ------------------------------------------------------------------
+    # Camera
+    # ------------------------------------------------------------------
 
     def _ensure_camera_widget(self):
         if self.camera_widget is not None:
             return
+
         if not CAMERA_AVAILABLE:
-            # Desktop dev environment without camera4kivy installed -
-            # surface this clearly instead of silently showing nothing.
-            self.permission_box.opacity = 1
-            self.permission_box.disabled = False
+            self._show_camera_error(
+                "Camera4Kivy is not available in this build."
+            )
             return
-        self.camera_widget = DocumentCamera(
-            size_hint=(1, 1), on_detection=self._on_detection
+
+        try:
+            self.camera_widget = DocumentCamera(
+                size_hint=(1, 1),
+                on_detection=self._on_detection,
+                on_camera_error=self._show_camera_error,
+            )
+            # Camera goes behind labels/overlays.
+            self.camera_container.add_widget(
+                self.camera_widget,
+                index=len(self.camera_container.children),
+            )
+        except Exception as exc:
+            self.camera_widget = None
+            self._show_camera_error(
+                f"Could not create camera preview: {exc}"
+            )
+
+    def _show_camera_error(self, message: str):
+        self.capture_busy = False
+
+        if self.shutter_button:
+            self.shutter_button.disabled = False
+
+        if self.hint_label:
+            self.hint_label.text = "Camera error"
+
+        dialog = MDDialog(
+            title="Camera error",
+            text=str(message),
+            buttons=[
+                MDFlatButton(
+                    text="OK",
+                    on_release=lambda *a: dialog.dismiss(),
+                )
+            ],
         )
-        self.camera_container.add_widget(self.camera_widget, index=1)
+        dialog.open()
+
+    # ------------------------------------------------------------------
+    # Detection / auto capture
+    # ------------------------------------------------------------------
 
     def _on_detection(self, quad, frame_size):
-        # Runs on the main thread (DocumentCamera schedules it there).
+        if self.capture_busy:
+            return
+
         self.document_detected = quad is not None
-        if self.hint_label:
-            if self.document_detected:
-                self.hint_label.text = (
-                    "Hold still..." if self.auto_capture_enabled else "Document detected - tap to capture"
-                )
-            else:
-                self.hint_label.text = "Point the camera at a document"
+        self._update_hint()
 
         if not self.auto_capture_enabled:
             self._auto_capture.reset()
             self.ring_progress = 0.0
             return
 
+        if quad is None:
+            self._auto_capture.reset()
+            self.ring_progress = 0.0
+            return
+
         frame_w, frame_h = frame_size
         diagonal = (frame_w ** 2 + frame_h ** 2) ** 0.5
-        status = self._auto_capture.update(quad, diagonal, now=time.monotonic())
+
+        status = self._auto_capture.update(
+            quad,
+            diagonal,
+            now=time.monotonic(),
+        )
         self.ring_progress = status.progress
-        if status.should_capture:
+
+        if status.should_capture and not self.capture_busy:
             self.capture()
 
-    # ---- Capture -----------------------------------------------------
+    def _update_hint(self):
+        if not self.hint_label:
+            return
+
+        if self.capture_busy:
+            self.hint_label.text = "Processing..."
+            return
+
+        if self.scan_type == "id_card":
+            count = len(MDApp.get_running_app().active_session_pages)
+            if count == 0:
+                base = "Place the FRONT of the ID card"
+            elif count == 1:
+                base = "Place the BACK of the ID card"
+            else:
+                base = "ID card captured"
+        else:
+            base = "Point the camera at a document"
+
+        if self.document_detected:
+            if self.auto_capture_enabled:
+                if self.ring_progress > 0.05:
+                    self.hint_label.text = "Hold still..."
+                else:
+                    self.hint_label.text = "Document detected"
+            else:
+                self.hint_label.text = "Document detected - tap capture"
+        else:
+            self.hint_label.text = base
+
+    # ------------------------------------------------------------------
+    # Capture
+    # ------------------------------------------------------------------
 
     def capture(self):
-        if not self.camera_widget or self.shutter_button.disabled:
+        if self.capture_busy:
             return
+
+        if self.camera_widget is None:
+            self._show_camera_error(
+                "Camera is not ready yet."
+            )
+            return
+
+        if getattr(self.camera_widget, "capture_in_progress", False):
+            return
+
+        # ID Cards mode intentionally accepts only front + back.
+        app = MDApp.get_running_app()
+        if self.scan_type == "id_card" and len(app.active_session_pages) >= 2:
+            self._show_info(
+                "ID Cards",
+                "Front and back have already been captured.",
+            )
+            return
+
+        self.capture_busy = True
         self.shutter_button.disabled = True
         self._auto_capture.reset()
         self.ring_progress = 0.0
-        app = MDApp.get_running_app()
+        self._update_hint()
+
         session_id = id(app.active_session_pages)
-        self.camera_widget.capture(
+
+        started = self.camera_widget.capture(
             subdir=f"session_{session_id}",
             on_saved=self._on_page_captured,
+            on_error=self._on_capture_error,
+        )
+
+        if not started:
+            self._on_capture_error(
+                "The camera did not start the capture."
+            )
+
+    def _on_capture_error(self, message: str):
+        self.capture_busy = False
+        self.ring_progress = 0.0
+
+        if self.shutter_button:
+            self.shutter_button.disabled = False
+
+        self._update_hint()
+
+        self._show_info(
+            "Capture failed",
+            str(message),
         )
 
     def _on_page_captured(self, path: str):
+        if not path or not isinstance(path, str):
+            self._on_capture_error(
+                "The camera returned an invalid photo path."
+            )
+            return
+
         app = MDApp.get_running_app()
-        app.latest_raw_path = path  # kept for the manual crop editor (step 7)
-        # Perspective correction (step 6) runs off the main thread -
-        # warpPerspective on a full-resolution photo is fast but not
-        # free, and this must never stutter the UI.
+        app.latest_raw_path = path
+
         if self.hint_label:
-            self.hint_label.text = "Processing..."
+            self.hint_label.text = "Detecting document..."
+
         threading.Thread(
-            target=self._process_capture, args=(path,), daemon=True
+            target=self._process_capture,
+            args=(path,),
+            daemon=True,
         ).start()
 
     def _process_capture(self, raw_path: str):
-        base, ext = os.path.splitext(raw_path)
+        base, _ = os.path.splitext(raw_path)
         corrected_path = f"{base}_corrected.jpg"
+
         try:
-            was_corrected = correct_document_file(raw_path, corrected_path)
-            final_path = corrected_path if was_corrected else raw_path
+            was_corrected = correct_document_file(
+                raw_path,
+                corrected_path,
+            )
+            final_path = (
+                corrected_path if was_corrected else raw_path
+            )
         except Exception:
-            # Detection/warp failed on this particular photo (e.g. very
-            # different lighting than the live preview) - fall back to
-            # the raw capture rather than losing the page entirely.
             final_path = raw_path
-        Clock.schedule_once(lambda dt: self._on_capture_processed(final_path), 0)
+
+        Clock.schedule_once(
+            lambda dt, p=final_path:
+                self._on_capture_processed(p),
+            0,
+        )
 
     def _on_capture_processed(self, path: str):
         app = MDApp.get_running_app()
+
         app.active_session_pages.append(path)
-        self.shutter_button.disabled = False
-        self._update_page_count()
         app.latest_capture_path = path
+
+        self.capture_busy = False
+        self.document_detected = False
+        self.ring_progress = 0.0
+
+        if self.shutter_button:
+            self.shutter_button.disabled = False
+
+        self._update_page_count()
+        self._update_hint()
+
+        # ID card workflow: keep camera open for front/back, then open
+        # the editor after side 2.
+        if self.scan_type == "id_card":
+            if len(app.active_session_pages) >= 2:
+                Clock.schedule_once(
+                    lambda dt: app.go_to("editor"),
+                    0.15,
+                )
+            return
+
+        # Batch mode keeps the camera open. Single mode preserves the
+        # existing review/crop/filter flow.
+        if self.capture_mode == "batch":
+            return
+
         app.go_to("preview")
 
-    def _update_page_count(self):
-        app = MDApp.get_running_app()
-        count = len(app.active_session_pages)
-        self.page_count_text = "1 page" if count == 1 else f"{count} pages"
+    # ------------------------------------------------------------------
+    # Capture mode controls
+    # ------------------------------------------------------------------
 
-    # ---- Auto-capture toggle -----------------------------------------
+    def select_capture_mode(self, mode: str):
+        if mode not in ("single", "batch"):
+            return
+
+        self.capture_mode = mode
+        self._auto_capture.reset()
+        self.ring_progress = 0.0
+        self._update_hint()
+
+    def select_scan_type(self, scan_type: str):
+        if scan_type not in ("scan", "id_card"):
+            return
+
+        app = MDApp.get_running_app()
+
+        # Avoid mixing regular document pages and ID-card sides in one
+        # session. Ask before discarding already captured unsaved pages.
+        if app.active_session_pages and scan_type != self.scan_type:
+            def switch_after_discard(*args):
+                dialog.dismiss()
+                app.active_session_pages = []
+                app.latest_capture_path = None
+                app.latest_raw_path = None
+                self.scan_type = scan_type
+                if scan_type == "id_card":
+                    self.capture_mode = "batch"
+                self._update_page_count()
+                self._update_hint()
+
+            dialog = MDDialog(
+                title="Change scan mode?",
+                text=(
+                    "Changing between Document Scan and ID Cards will "
+                    "discard the unsaved pages in the current scan."
+                ),
+                buttons=[
+                    MDFlatButton(
+                        text="CANCEL",
+                        on_release=lambda *a: dialog.dismiss(),
+                    ),
+                    MDFlatButton(
+                        text="DISCARD",
+                        on_release=switch_after_discard,
+                    ),
+                ],
+            )
+            dialog.open()
+            return
+
+        self.scan_type = scan_type
+
+        # Front/back ID capture behaves like a tiny batch.
+        if scan_type == "id_card":
+            self.capture_mode = "batch"
+
+        self._auto_capture.reset()
+        self.ring_progress = 0.0
+        self._update_hint()
+
+    # ------------------------------------------------------------------
+    # Auto capture / flash
+    # ------------------------------------------------------------------
 
     def toggle_auto_capture(self):
         self.auto_capture_enabled = not self.auto_capture_enabled
         self._auto_capture.reset()
         self.ring_progress = 0.0
-        MDApp.get_running_app().prefs.set("auto_capture", self.auto_capture_enabled)
-        icon = "timer-outline" if self.auto_capture_enabled else "timer-off-outline"
+
+        MDApp.get_running_app().prefs.set(
+            "auto_capture",
+            self.auto_capture_enabled,
+        )
+
+        icon = (
+            "timer-outline"
+            if self.auto_capture_enabled
+            else "timer-off-outline"
+        )
+
         if self.top_bar:
             self.top_bar.right_action_items = [
-                ["flash-off", lambda x: self.toggle_flash()],
-                [icon, lambda x: self.toggle_auto_capture()],
+                [
+                    "flash-off",
+                    lambda x: self.toggle_flash(),
+                ],
+                [
+                    icon,
+                    lambda x: self.toggle_auto_capture(),
+                ],
             ]
 
-    # ---- Navigation -----------------------------------------------------
+        self._update_hint()
 
     def toggle_flash(self):
-        # Camera4Kivy exposes flash as a connect_camera()/reconnect option
-        # rather than a live property, so a real toggle needs a
-        # disconnect+reconnect cycle - deferred alongside remaining
-        # capture-quality controls (focus, exposure).
+        # Keep this as a UI state only. Camera4Kivy torch/flash support
+        # differs by camera provider/device; reconnecting the camera on
+        # every tap is more likely to interrupt capture than help.
         self._flash_on = not self._flash_on
 
+    # ------------------------------------------------------------------
+    # Navigation
+    # ------------------------------------------------------------------
+
     def go_to_pages(self):
-        MDApp.get_running_app().go_to("editor")
+        app = MDApp.get_running_app()
+        if app.active_session_pages:
+            app.go_to("editor")
 
     def close_scanner(self):
         MDApp.get_running_app().go_to("home")
+
+    def _update_page_count(self):
+        count = len(
+            MDApp.get_running_app().active_session_pages
+        )
+        self.page_count_text = (
+            "1 page" if count == 1 else f"{count} pages"
+        )
+
+    @staticmethod
+    def _show_info(title: str, text: str):
+        dialog = MDDialog(
+            title=title,
+            text=text,
+            buttons=[
+                MDFlatButton(
+                    text="OK",
+                    on_release=lambda *a: dialog.dismiss(),
+                )
+            ],
+        )
+        dialog.open()
