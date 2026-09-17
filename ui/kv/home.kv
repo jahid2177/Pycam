@@ -63,18 +63,25 @@
                             halign: "center"
                             font_size: "58sp"
                             theme_text_color: "Hint"
+                            size_hint_y: None
+                            height: dp(64)
 
                         MDLabel:
                             text: "No documents yet"
                             halign: "center"
                             theme_text_color: "Hint"
                             font_style: "H6"
+                            size_hint_y: None
+                            height: self.texture_size[1]
 
                         MDLabel:
                             text: "Tap the camera button to scan your first page"
                             halign: "center"
                             theme_text_color: "Hint"
                             font_style: "Caption"
+                            size_hint_y: None
+                            height: self.texture_size[1]
+                            text_size: self.width, None
 
                     MDList:
                         id: recent_list
