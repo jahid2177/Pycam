@@ -13,6 +13,8 @@ boundaries).
 
 from datetime import datetime
 
+from kivy.core.window import Window
+from kivy.metrics import dp
 from kivy.properties import StringProperty, ObjectProperty
 from kivy.uix.boxlayout import BoxLayout
 from kivymd.uix.screen import MDScreen
@@ -32,6 +34,43 @@ DOCUMENT_TYPE_ICONS = {
     "business_card": "card-account-mail-outline",
     "passport": "passport",
 }
+
+
+# --- Dropdown menu plumbing -------------------------------------------
+# KivyMD's MDDropdownMenu anchors itself to the caller widget, so an overflow
+# button sitting on the right edge of a row pushed the card past the screen
+# edge. The most recently opened menu is tracked here so it can be clamped back
+# inside the window, and so it can be closed before a dialog is shown - an open
+# menu used to stay visible underneath the dialog's dim layer.
+_open_menu = None
+
+
+def register_open_menu(menu):
+    global _open_menu
+    _open_menu = menu
+
+
+def dismiss_open_menu():
+    """Close the tracked dropdown, if any, before showing a modal dialog."""
+    global _open_menu
+    menu, _open_menu = _open_menu, None
+    if menu is not None:
+        try:
+            menu.dismiss()
+        except Exception:
+            pass
+
+
+def keep_menu_on_screen(menu, margin=dp(8)):
+    """Clamp an opened MDDropdownMenu card back inside the screen bounds."""
+    card = getattr(menu, "menu", None)
+    if card is None:
+        return
+    limit = Window.width - margin
+    if card.x + card.width > limit:
+        card.x = max(margin, limit - card.width)
+    if card.x < margin:
+        card.x = margin
 
 
 def _format_relative_time(iso_timestamp: str) -> str:
@@ -90,8 +129,16 @@ class DocumentListItem(BoxLayout):
             {"text": "Run OCR", "on_release": self._run_ocr},
             {"text": "Delete", "on_release": self._delete},
         ]
-        self._menu = MDDropdownMenu(caller=caller, items=items, width_mult=3)
-        self._menu.open()
+        menu = MDDropdownMenu(caller=caller, items=items, width_mult=3)
+        self._menu = menu
+        register_open_menu(menu)
+        menu.open()
+        # open() anchors the card to the caller; pull it back on-screen and
+        # re-check once the card has been laid out for this frame.
+        keep_menu_on_screen(menu)
+        from kivy.clock import Clock
+
+        Clock.schedule_once(lambda dt: keep_menu_on_screen(menu), 0)
 
     def _dismiss_menu(self):
         if self._menu:
@@ -154,7 +201,12 @@ class HomeScreen(MDScreen):
         self.doc_count_label.text = "1 document" if total == 1 else f"{total} documents"
 
         self.recent_list.clear_widgets()
+        # Collapse the empty state to zero height, not just fade it out: an
+        # invisible-but-present block still reserved ~240dp at the top of the
+        # list, which pushed the first row down so it looked vertically centred
+        # instead of top-aligned under the search bar.
         self.empty_state.opacity = 1 if not documents else 0
+        self.empty_state.height = dp(240) if not documents else 0
         self.empty_state.disabled = bool(documents)
 
         for document in documents[: self.RECENT_LIMIT]:
@@ -179,6 +231,7 @@ class HomeScreen(MDScreen):
         MDApp.get_running_app().go_to("tools")
 
     def open_document(self, document: dict):
+        dismiss_open_menu()
         app = MDApp.get_running_app()
         if app.active_session_pages:
             # Opening a saved document replaces the in-progress session
@@ -231,6 +284,7 @@ class HomeScreen(MDScreen):
     # ---- Item actions --------------------------------------------------
 
     def prompt_rename(self, document: dict):
+        dismiss_open_menu()
         field = MDTextField(text=document["name"], hint_text="Document name")
 
         def do_rename(*args):
@@ -254,6 +308,7 @@ class HomeScreen(MDScreen):
         dialog.open()
 
     def confirm_delete(self, document: dict):
+        dismiss_open_menu()
         from kivymd.uix.button import MDFlatButton
 
         def do_delete(*args):
@@ -272,6 +327,7 @@ class HomeScreen(MDScreen):
         dialog.open()
 
     def export_document(self, document: dict):
+        dismiss_open_menu()
         app = MDApp.get_running_app()
         pages = app.db.get_pages(
             document["id"]
@@ -424,6 +480,7 @@ class HomeScreen(MDScreen):
         )
 
     def run_ocr(self, document: dict):
+        dismiss_open_menu()
         app = MDApp.get_running_app()
         pages = app.db.get_pages(document["id"])
         if not pages:
