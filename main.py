@@ -26,6 +26,7 @@ from ui.crop import CropScreen
 from ui.editor import EditorScreen
 from ui.documents import DocumentsScreen
 from ui.settings import SettingsScreen
+from ui.tools import ToolsScreen
 
 APP_NAME = "Document Scanner"
 KV_DIR = os.path.join(os.path.dirname(__file__), "ui", "kv")
@@ -64,7 +65,7 @@ class ScannerApp(MDApp):
 
     def build(self):
         self.theme_cls.theme_style = self.prefs.get("theme_style")
-        self.theme_cls.primary_palette = "Blue"
+        self.theme_cls.primary_palette = "Teal"
         self.theme_cls.accent_palette = "Amber"
 
         self._load_kv_files()
@@ -78,6 +79,7 @@ class ScannerApp(MDApp):
         self.screen_manager.add_widget(EditorScreen(name="editor"))
         self.screen_manager.add_widget(DocumentsScreen(name="documents"))
         self.screen_manager.add_widget(SettingsScreen(name="settings"))
+        self.screen_manager.add_widget(ToolsScreen(name="tools"))
 
         return self.screen_manager
 
