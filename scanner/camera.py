@@ -100,7 +100,7 @@ class DocumentCamera(Preview):
 
         kwargs.setdefault(
             "aspect_ratio",
-            "16:9",
+            "full",
         )
         kwargs.setdefault(
             "orientation",
