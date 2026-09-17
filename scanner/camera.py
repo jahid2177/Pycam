@@ -1,12 +1,12 @@
 """
-Camera4Kivy bridge used by the scanner screen.
+Camera4Kivy bridge for Pycam document scanning.
 
-Important Camera4Kivy API details:
-- filepath_callback belongs to connect_camera(), not capture_photo().
-- Android capture location must be "private" or "shared".
-- capture_photo() uses name=..., not name_fmt=....
-- enable_video=False reduces CameraX use-cases and improves compatibility
-  on devices that simultaneously run image analysis and photo capture.
+This version focuses on:
+- real Android torch control (not UI-only flash state);
+- stable document outline with temporal hysteresis;
+- missed-frame hold so the outline does not blink;
+- rejection of single-frame false jumps;
+- CameraX-safe photo + image-analysis configuration.
 """
 
 import threading
@@ -35,8 +35,15 @@ except Exception:
 ANALYSIS_FRAME_SKIP = 2
 ANALYSIS_RESOLUTION = 720
 
-OUTLINE_COLOR = (0.20, 0.85, 0.35, 0.98)
+OUTLINE_COLOR = (0.12, 0.88, 0.67, 0.98)
 OUTLINE_WIDTH = dp(3)
+
+# Stability tuning
+SMOOTH_ALPHA_STABLE = 0.20
+SMOOTH_ALPHA_MOVING = 0.36
+MAX_SINGLE_FRAME_JUMP_RATIO = 0.095
+JUMP_CONFIRM_FRAMES = 2
+MAX_MISSED_DETECTION_FRAMES = 5
 
 
 class DocumentCamera(Preview):
@@ -47,6 +54,7 @@ class DocumentCamera(Preview):
                 "use the CameraX provider hook on Android."
             )
 
+        # 16:9 matches the full-screen scanner reference more closely.
         kwargs.setdefault("aspect_ratio", "16:9")
         kwargs.setdefault("orientation", "same")
         kwargs.setdefault("letterbox_color", (0, 0, 0, 1))
@@ -56,7 +64,12 @@ class DocumentCamera(Preview):
         self.on_detection = on_detection
         self.on_camera_error = on_camera_error
 
-        self._detector = DocumentDetector()
+        self._detector = DocumentDetector(
+            detection_long_edge=720,
+            min_area_ratio=0.10,
+            max_area_ratio=0.97,
+        )
+
         self._capture_callback = None
         self._capture_error_callback = None
         self._capture_in_progress = False
@@ -66,6 +79,12 @@ class DocumentCamera(Preview):
         self._canvas_quad = None
         self._smoothed_quad: Optional[np.ndarray] = None
         self._last_frame_size = (0, 0)
+
+        self._missed_frames = 0
+        self._pending_jump_quad: Optional[np.ndarray] = None
+        self._pending_jump_count = 0
+
+        self._torch_on = False
 
     # ------------------------------------------------------------------
     # Camera lifecycle
@@ -88,6 +107,13 @@ class DocumentCamera(Preview):
             )
 
     def stop(self):
+        # Never leave the LED on when leaving the scanner.
+        if self._torch_on:
+            try:
+                self.set_torch(False)
+            except Exception:
+                pass
+
         try:
             self.disconnect_camera()
         except Exception:
@@ -97,9 +123,46 @@ class DocumentCamera(Preview):
             self._canvas_quad = None
             self._smoothed_quad = None
 
+        self._missed_frames = 0
+        self._pending_jump_quad = None
+        self._pending_jump_count = 0
         self._capture_in_progress = False
         self._capture_callback = None
         self._capture_error_callback = None
+
+    # ------------------------------------------------------------------
+    # Flash / torch
+    # ------------------------------------------------------------------
+
+    @property
+    def torch_on(self) -> bool:
+        return self._torch_on
+
+    def set_torch(self, enabled: bool) -> bool:
+        """
+        Turn the Android torch on/off immediately.
+
+        Camera4Kivy exposes Android flash/torch control through flash().
+        For preview illumination we use explicit 'on'/'off' states.
+        """
+        enabled = bool(enabled)
+
+        if platform != "android":
+            self._torch_on = enabled
+            return True
+
+        if not getattr(self, "camera_connected", False):
+            return False
+
+        try:
+            self.flash("on" if enabled else "off")
+            self._torch_on = enabled
+            return True
+        except Exception as exc:
+            self._notify_camera_error(
+                f"Flash/torch is not available on this camera: {exc}"
+            )
+            return False
 
     # ------------------------------------------------------------------
     # Capture
@@ -110,13 +173,6 @@ class DocumentCamera(Preview):
         return self._capture_in_progress
 
     def capture(self, subdir, on_saved, on_error=None):
-        """
-        Start a full-resolution capture.
-
-        Camera4Kivy reports completion through the filepath_callback that
-        was registered in connect_camera(). We keep the per-capture app
-        callback here and dispatch it when Camera4Kivy reports the path.
-        """
         if self._capture_in_progress:
             return False
 
@@ -124,7 +180,6 @@ class DocumentCamera(Preview):
         self._capture_error_callback = on_error
         self._capture_in_progress = True
 
-        # Camera4Kivy automatically appends ".jpg".
         unique_name = f"scan_{int(time.time() * 1000)}"
 
         try:
@@ -151,13 +206,6 @@ class DocumentCamera(Preview):
             return False
 
     def _on_captured(self, path):
-        """
-        Camera4Kivy filepath_callback.
-
-        A valid private capture returns a real filesystem path. Empty or
-        warning-style callbacks are treated as capture failures instead
-        of sending an invalid path into OpenCV.
-        """
         self._capture_in_progress = False
 
         saved_callback = self._capture_callback
@@ -168,7 +216,6 @@ class DocumentCamera(Preview):
 
         if isinstance(path, str) and path.strip():
             clean_path = path.strip()
-
             if saved_callback:
                 Clock.schedule_once(
                     lambda dt, p=clean_path: saved_callback(p), 0
@@ -228,7 +275,11 @@ class DocumentCamera(Preview):
 
         self._last_frame_size = (frame_w, frame_h)
 
-        stable_quad = self._smooth_detection(detected, frame_w, frame_h)
+        stable_quad = self._stabilize_detection(
+            detected,
+            frame_w,
+            frame_h,
+        )
 
         if stable_quad is None:
             with self._lock:
@@ -253,53 +304,104 @@ class DocumentCamera(Preview):
                 0,
             )
 
-    def _smooth_detection(
+    def _stabilize_detection(
         self,
         quad: Optional[np.ndarray],
         frame_w: int,
         frame_h: int,
     ) -> Optional[np.ndarray]:
         """
-        Light temporal smoothing removes the rapidly jumping outline.
+        Stable tracking without an expensive full tracker.
 
-        If a detection suddenly moves too far, start from the new result
-        rather than dragging an old rectangle across the preview.
+        1. Hold the last good quad for a few missed frames.
+        2. Ignore a one-frame large jump.
+        3. Accept a large jump only after it repeats.
+        4. Use stronger EMA smoothing when movement is small.
         """
+        diagonal = max(
+            (frame_w ** 2 + frame_h ** 2) ** 0.5,
+            1.0,
+        )
+
         if quad is None:
+            self._missed_frames += 1
+
+            if (
+                self._smoothed_quad is not None
+                and self._missed_frames <= MAX_MISSED_DETECTION_FRAMES
+            ):
+                return self._smoothed_quad.copy()
+
             self._smoothed_quad = None
+            self._pending_jump_quad = None
+            self._pending_jump_count = 0
             return None
 
+        self._missed_frames = 0
         current = order_points(
             np.asarray(quad, dtype=np.float32).reshape(4, 2)
         )
 
         if self._smoothed_quad is None:
-            self._smoothed_quad = current
-            return current
+            self._smoothed_quad = current.copy()
+            self._pending_jump_quad = None
+            self._pending_jump_count = 0
+            return self._smoothed_quad.copy()
 
-        diagonal = (frame_w ** 2 + frame_h ** 2) ** 0.5
-        mean_move = float(
-            np.mean(
-                np.linalg.norm(
-                    current - self._smoothed_quad,
-                    axis=1,
+        distances = np.linalg.norm(
+            current - self._smoothed_quad,
+            axis=1,
+        )
+        mean_move = float(np.mean(distances))
+        move_ratio = mean_move / diagonal
+
+        # A large sudden jump is usually a false contour. Require the
+        # new position to appear in two consecutive analyzed frames.
+        if move_ratio > MAX_SINGLE_FRAME_JUMP_RATIO:
+            if self._pending_jump_quad is None:
+                self._pending_jump_quad = current.copy()
+                self._pending_jump_count = 1
+                return self._smoothed_quad.copy()
+
+            jump_repeat = float(
+                np.mean(
+                    np.linalg.norm(
+                        current - self._pending_jump_quad,
+                        axis=1,
+                    )
                 )
-            )
+            ) / diagonal
+
+            if jump_repeat <= 0.045:
+                self._pending_jump_count += 1
+            else:
+                self._pending_jump_quad = current.copy()
+                self._pending_jump_count = 1
+
+            if self._pending_jump_count < JUMP_CONFIRM_FRAMES:
+                return self._smoothed_quad.copy()
+
+            self._smoothed_quad = current.copy()
+            self._pending_jump_quad = None
+            self._pending_jump_count = 0
+            return self._smoothed_quad.copy()
+
+        self._pending_jump_quad = None
+        self._pending_jump_count = 0
+
+        # Strong smoothing while the device/page is nearly still.
+        alpha = (
+            SMOOTH_ALPHA_STABLE
+            if move_ratio < 0.025
+            else SMOOTH_ALPHA_MOVING
         )
 
-        if mean_move > diagonal * 0.12:
-            self._smoothed_quad = current
-            return current
-
-        # Lower alpha = steadier box. 0.32 still follows deliberate hand
-        # movement without the "dancing corners" effect.
-        alpha = 0.32
         self._smoothed_quad = (
             alpha * current
             + (1.0 - alpha) * self._smoothed_quad
         ).astype(np.float32)
 
-        return self._smoothed_quad
+        return self._smoothed_quad.copy()
 
     @staticmethod
     def _to_canvas_coords(
@@ -310,14 +412,6 @@ class DocumentCamera(Preview):
         image_scale,
         mirror,
     ):
-        """
-        Convert OpenCV top-left-origin image coordinates to Kivy's
-        bottom-left-origin canvas coordinates.
-
-        Camera4Kivy normally supplies scalar image_scale. Tuple/list
-        handling is included for providers/configurations that supply
-        independent X/Y scale.
-        """
         px, py = float(image_pos[0]), float(image_pos[1])
 
         if isinstance(image_scale, (tuple, list, np.ndarray)):
@@ -337,10 +431,8 @@ class DocumentCamera(Preview):
             if mirror:
                 x = frame_w - x
 
-            # OpenCV: y=0 at top. Kivy canvas: y=0 at bottom.
             canvas_x = px + x * sx
             canvas_y = py + (frame_h - y) * sy
-
             points.extend((canvas_x, canvas_y))
 
         return points
@@ -351,7 +443,11 @@ class DocumentCamera(Preview):
 
     def canvas_instructions_callback(self, texture, tex_size, tex_pos):
         with self._lock:
-            quad = None if self._canvas_quad is None else list(self._canvas_quad)
+            quad = (
+                None
+                if self._canvas_quad is None
+                else list(self._canvas_quad)
+            )
 
         if not quad:
             return
