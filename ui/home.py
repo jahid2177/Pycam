@@ -165,13 +165,18 @@ class DocumentListItem(BoxLayout):
         self.controller.open_document(self.document)
 
     def on_touch_up(self, touch):
-        # Let children (the overflow menu button) handle their own tap
-        # first; only treat this as "open the document" if nothing
-        # inside the row already consumed the touch. Without this
-        # override, on_release_row was previously unreachable - a
-        # BoxLayout has no built-in tap event of its own.
-        if super().on_touch_up(touch):
+        # Let children (the overflow menu button) handle their own tap first
+        result = super().on_touch_up(touch)
+        
+        # Check if the touch is on the 3-dot menu button to stop propagation
+        for child in self.children:
+            if getattr(child, 'icon', '') == 'dots-vertical' and child.collide_point(*touch.pos):
+                return True
+                
+        if result:
             return True
+            
+        # Treat as row click only if children didn't consume the touch
         if self.collide_point(*touch.pos):
             self.on_release_row()
             return True
