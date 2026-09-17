@@ -53,6 +53,12 @@ android.permissions = CAMERA,INTERNET,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORA
 
 
 # ================================================================
+# ML KIT OCR
+# Required by ocr/mlkit_ocr.py for Extract Text / Photo Translation.
+# ================================================================
+android.gradle_dependencies = com.google.android.gms:play-services-mlkit-text-recognition:19.0.1
+
+# ================================================================
 # STORAGE / ACTIVITY
 # ================================================================
 android.private_storage = True

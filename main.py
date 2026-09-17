@@ -14,6 +14,8 @@ from kivy.core.window import Window
 from kivy.lang import Builder
 from kivy.uix.screenmanager import ScreenManager, NoTransition
 from kivymd.app import MDApp
+from kivymd.uix.dialog import MDDialog
+from kivymd.uix.button import MDFlatButton
 
 from database.database import DocumentDatabase
 from storage.manager import StorageManager
@@ -27,6 +29,7 @@ from ui.editor import EditorScreen
 from ui.documents import DocumentsScreen
 from ui.settings import SettingsScreen
 from ui.tools import ToolsScreen
+from ui.tool_workflows import ToolWorkflowScreen
 
 APP_NAME = "Document Scanner"
 KV_DIR = os.path.join(os.path.dirname(__file__), "ui", "kv")
@@ -62,6 +65,7 @@ class ScannerApp(MDApp):
         self.crop_source_path = None
         self.selected_document_id = None
         self.editing_document_id = None  # set when re-opening a saved document (step 10)
+        self._exit_dialog = None
 
     def build(self):
         self.theme_cls.theme_style = self.prefs.get("theme_style")
@@ -80,6 +84,10 @@ class ScannerApp(MDApp):
         self.screen_manager.add_widget(DocumentsScreen(name="documents"))
         self.screen_manager.add_widget(SettingsScreen(name="settings"))
         self.screen_manager.add_widget(ToolsScreen(name="tools"))
+        self.screen_manager.add_widget(ToolWorkflowScreen(name="extract_text_tool", mode="extract_text"))
+        self.screen_manager.add_widget(ToolWorkflowScreen(name="passport_photo_tool", mode="passport_photo"))
+        self.screen_manager.add_widget(ToolWorkflowScreen(name="photo_translation_tool", mode="photo_translation"))
+        self.screen_manager.add_widget(ToolWorkflowScreen(name="scan_code_tool", mode="scan_code"))
 
         return self.screen_manager
 
@@ -99,6 +107,7 @@ class ScannerApp(MDApp):
         # Warm up the documents list so DocumentsScreen has data the
         # instant the user navigates to it.
         self.db.initialize()
+        Window.bind(on_keyboard=self._on_keyboard)
 
     def on_pause(self):
         # Returning True lets the app resume instead of being killed
@@ -107,6 +116,61 @@ class ScannerApp(MDApp):
 
     def on_resume(self):
         pass
+
+    def _on_keyboard(self, window, key, scancode, codepoint, modifiers):
+        """
+        Android hardware/system Back key.
+
+        - From a child screen: return to Home.
+        - From Home: ask before exiting the application.
+        """
+        if key not in (27, 1001):
+            return False
+
+        if self._exit_dialog is not None:
+            return True
+
+        if self.screen_manager.current != "home":
+            self.go_to("home")
+            return True
+
+        self._show_exit_confirmation()
+        return True
+
+    def _show_exit_confirmation(self):
+        if self._exit_dialog is not None:
+            return
+
+        dialog = MDDialog(
+            title="Exit application?",
+            text="Are you sure to exit?",
+            auto_dismiss=False,
+            buttons=[
+                MDFlatButton(
+                    text="NO",
+                    on_release=lambda *_: self._dismiss_exit_dialog(),
+                ),
+                MDFlatButton(
+                    text="YES",
+                    on_release=lambda *_: self._confirm_exit(),
+                ),
+            ],
+        )
+        self._exit_dialog = dialog
+        dialog.open()
+
+    def _dismiss_exit_dialog(self):
+        dialog = self._exit_dialog
+        self._exit_dialog = None
+        if dialog is not None:
+            dialog.dismiss()
+
+    def _confirm_exit(self):
+        dialog = self._exit_dialog
+        self._exit_dialog = None
+        if dialog is not None:
+            dialog.dismiss()
+        self.stop()
 
     def go_to(self, screen_name: str, **transition_kwargs):
         """Central navigation helper so screens don't reach into
