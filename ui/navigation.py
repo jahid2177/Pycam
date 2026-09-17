@@ -1,3 +1,10 @@
+"""
+Bottom navigation bar, shared by every top-level screen.
+
+Kept in one place (Home, Files, Tools and Settings all instantiate it) so the
+bar - and the divider/elevation above it - stays identical on every screen.
+"""
+
 from kivy.metrics import dp
 from kivy.properties import BooleanProperty, StringProperty
 from kivy.uix.behaviors import ButtonBehavior
@@ -7,7 +14,43 @@ from kivymd.uix.label import MDIcon, MDLabel
 
 ACTIVE = (0.05, 0.52, 0.46, 1)
 INACTIVE = (0.38, 0.45, 0.54, 1)
-BAR_BG = (0.985, 0.99, 1, 1)
+BAR_BG = (1, 1, 1, 1)
+
+# KivyMD's MDBoxLayout has no elevation/shadow of its own, and the bar's
+# background was within a hair of the page colour, so bar and content merged
+# into one flat white area with no visible boundary. Three stacked hairlines
+# (light at the top, darkest against the bar) read as a soft top shadow; the
+# darkest band doubles as the divider.
+SHADOW_BANDS = (
+    (0.935, 0.945, 0.965, 1),
+    (0.895, 0.910, 0.930, 1),
+    (0.835, 0.850, 0.875, 1),
+)
+BAND_HEIGHT = dp(2)
+SHADOW_HEIGHT = BAND_HEIGHT * len(SHADOW_BANDS)
+BAR_HEIGHT = dp(82)
+
+
+class _ElevationShadow(MDBoxLayout):
+    """Hairline bands drawn directly above the bar to signal elevation."""
+
+    def __init__(self, **kwargs):
+        super().__init__(
+            orientation="vertical",
+            size_hint_y=None,
+            height=SHADOW_HEIGHT,
+            padding=(0, 0, 0, 0),
+            spacing=0,
+            **kwargs,
+        )
+        for color in SHADOW_BANDS:
+            self.add_widget(
+                MDBoxLayout(
+                    size_hint_y=None,
+                    height=BAND_HEIGHT,
+                    md_bg_color=color,
+                )
+            )
 
 
 class BottomNavItem(ButtonBehavior, MDBoxLayout):
@@ -72,21 +115,33 @@ class BottomNavItem(ButtonBehavior, MDBoxLayout):
 
 class BottomNavigationBar(MDBoxLayout):
     """
-    Four equal-width navigation cells.
+    Four equal-width navigation cells, with a divider + soft top shadow so the
+    bar is visually separated from the content behind it.
 
-    Explicit 25% widths keep Home / Files / Tools / Settings perfectly
-    centered even on phones with different screen widths.
+    Explicit 25% widths keep Home / Files / Tools / Settings perfectly centered
+    even on phones with different screen widths.
     """
 
     def __init__(self, selected="home", **kwargs):
         super().__init__(
-            orientation="horizontal",
+            orientation="vertical",
             size_hint_y=None,
-            height=dp(82),
+            height=BAR_HEIGHT,
             padding=(0, 0, 0, 0),
             spacing=0,
             md_bg_color=BAR_BG,
             **kwargs,
+        )
+
+        self.add_widget(_ElevationShadow())
+
+        row = MDBoxLayout(
+            orientation="horizontal",
+            size_hint_y=None,
+            height=BAR_HEIGHT - SHADOW_HEIGHT,
+            padding=(0, 0, 0, 0),
+            spacing=0,
+            md_bg_color=BAR_BG,
         )
 
         items = (
@@ -97,7 +152,7 @@ class BottomNavigationBar(MDBoxLayout):
         )
 
         for icon, label, target in items:
-            self.add_widget(
+            row.add_widget(
                 BottomNavItem(
                     icon=icon,
                     label=label,
@@ -105,3 +160,5 @@ class BottomNavigationBar(MDBoxLayout):
                     selected=(target == selected),
                 )
             )
+
+        self.add_widget(row)
