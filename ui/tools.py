@@ -214,11 +214,25 @@ class ToolsScreen(MDScreen):
 
         if key == "id_cards":
             app.active_session_pages = []
+            app.latest_capture_path = None
+            app.latest_raw_path = None
             app.editing_document_id = None
+
             scanner = app.screen_manager.get_screen("scanner")
             scanner.scan_type = "id_card"
             scanner.capture_mode = "batch"
             app.go_to("scanner")
+            return
+
+        workflow_screens = {
+            "extract_text": "extract_text_tool",
+            "passport_photo": "passport_photo_tool",
+            "photo_translation": "photo_translation_tool",
+            "scan_code": "scan_code_tool",
+        }
+
+        if key in workflow_screens:
+            app.go_to(workflow_screens[key])
             return
 
         if key == "opencv_crop":
@@ -232,20 +246,10 @@ class ToolsScreen(MDScreen):
                 )
             return
 
-        if key == "extract_text":
-            if app.active_session_pages:
-                app.go_to("editor")
-            else:
-                self._info(
-                    "Extract Text",
-                    "Scan or import a document first. OCR is available from the document workflow.",
-                )
-            return
-
         self._info(
             title,
-            f"{title} is now available in the Tools dashboard. "
-            "Its processing workflow is not implemented in the current Pycam codebase yet.",
+            f"{title} is available in the Tools dashboard. "
+            "Its processing workflow is not connected yet.",
         )
 
     def _show_search_message(self):
