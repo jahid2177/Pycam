@@ -47,7 +47,7 @@ class DocumentCamera(Preview):
                 "use the CameraX provider hook on Android."
             )
 
-        kwargs.setdefault("aspect_ratio", "4:3")
+        kwargs.setdefault("aspect_ratio", "16:9")
         kwargs.setdefault("orientation", "same")
         kwargs.setdefault("letterbox_color", (0, 0, 0, 1))
 
