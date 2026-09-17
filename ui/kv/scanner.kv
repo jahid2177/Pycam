@@ -9,16 +9,22 @@
 
     MDBoxLayout:
         orientation: "vertical"
+        spacing: 0
+        padding: 0
         md_bg_color: 0, 0, 0, 1
 
-        # ------------------------------------------------------------
-        # Full camera preview.
-        # Top controls are OVER the preview like the supplied reference.
-        # ------------------------------------------------------------
+        # Camera preview uses ALL available space above Single / Batch.
         FloatLayout:
             id: camera_container
+            size_hint_y: 1
 
-            # Top-left close button
+            canvas.before:
+                Color:
+                    rgba: 0, 0, 0, 1
+                Rectangle:
+                    pos: self.pos
+                    size: self.size
+
             MDIconButton:
                 icon: "close"
                 theme_text_color: "Custom"
@@ -26,7 +32,7 @@
                 user_font_size: "31sp"
                 size_hint: None, None
                 size: dp(56), dp(56)
-                pos_hint: {"x": 0.02, "top": 0.985}
+                pos_hint: {"x": 0.018, "top": 0.985}
                 on_release: root.close_scanner()
                 canvas.before:
                     Color:
@@ -35,13 +41,12 @@
                         pos: self.pos
                         size: self.size
 
-            # Right-side camera actions: Flash / Enhance / HD / More
             MDBoxLayout:
                 orientation: "horizontal"
                 adaptive_width: True
                 size_hint_y: None
                 height: dp(58)
-                spacing: dp(7)
+                spacing: dp(6)
                 pos_hint: {"right": 0.985, "top": 0.985}
 
                 MDIconButton:
@@ -105,10 +110,9 @@
                             pos: self.pos
                             size: self.size
 
-            # Center hint pill
             MDCard:
                 orientation: "horizontal"
-                size_hint: 0.60, None
+                size_hint: 0.62, None
                 height: dp(50)
                 pos_hint: {"center_x": 0.5, "top": 0.885}
                 radius: [dp(25)]
@@ -157,22 +161,20 @@
                     pos_hint: {"center_x": 0.5}
                     on_release: root.request_permission()
 
-        # ------------------------------------------------------------
-        # Bottom scanner controls
-        # ------------------------------------------------------------
+        # Bottom controls start immediately when camera preview ends.
         MDBoxLayout:
             orientation: "vertical"
             size_hint_y: None
             height: dp(190)
-            padding: dp(10), dp(4), dp(10), dp(8)
-            spacing: dp(2)
+            padding: dp(10), 0, dp(10), dp(6)
+            spacing: 0
             md_bg_color: 0, 0, 0, 1
 
             MDBoxLayout:
                 orientation: "horizontal"
                 adaptive_width: True
                 size_hint_y: None
-                height: dp(34)
+                height: dp(38)
                 spacing: dp(4)
                 pos_hint: {"center_x": 0.5}
 
@@ -213,8 +215,8 @@
             MDBoxLayout:
                 orientation: "horizontal"
                 size_hint_y: None
-                height: dp(112)
-                padding: dp(4), dp(3)
+                height: dp(118)
+                padding: dp(4), dp(2)
                 spacing: dp(4)
 
                 MDBoxLayout:
