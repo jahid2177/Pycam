@@ -4,102 +4,107 @@
     recent_list: recent_list
     empty_state: empty_state
     doc_count_label: doc_count_label
+    bottom_nav_container: bottom_nav_container
 
-    MDBoxLayout:
-        orientation: "vertical"
-
-        MDTopAppBar:
-            title: "Document Scanner"
-            elevation: 2
-            right_action_items: [["magnify", lambda x: root.open_search()], ["cog", lambda x: root.go_settings()]]
+    MDFloatLayout:
+        md_bg_color: 0.97, 0.98, 1, 1
 
         MDBoxLayout:
             orientation: "vertical"
-            padding: dp(16), dp(12), dp(16), dp(0)
-            size_hint_y: None
-            height: dp(36)
-
-            MDLabel:
-                id: doc_count_label
-                text: "0 documents"
-                theme_text_color: "Secondary"
-                font_style: "Caption"
-
-        ScrollView:
-            do_scroll_x: False
+            size_hint: 1, 1
+            pos_hint: {"x": 0, "y": 0}
 
             MDBoxLayout:
                 orientation: "vertical"
-                adaptive_height: True
-                padding: dp(8)
-                spacing: dp(4)
+                size_hint_y: None
+                height: dp(100)
+                padding: dp(18), dp(12), dp(18), dp(6)
+                md_bg_color: 0.97, 0.98, 1, 1
+
+                MDTextField:
+                    id: search_field
+                    hint_text: "Search"
+                    mode: "rectangle"
+                    icon_right: "magnify"
+                    size_hint_y: None
+                    height: dp(56)
+                    on_text: root.refresh_documents(self.text.strip() or None)
+
+            MDBoxLayout:
+                orientation: "vertical"
+                padding: dp(18), 0, dp(18), dp(4)
+                size_hint_y: None
+                height: dp(34)
+
+                MDLabel:
+                    id: doc_count_label
+                    text: "0 documents"
+                    theme_text_color: "Secondary"
+                    font_style: "Caption"
+
+            ScrollView:
+                do_scroll_x: False
 
                 MDBoxLayout:
-                    id: empty_state
                     orientation: "vertical"
                     adaptive_height: True
-                    padding: dp(32)
-                    spacing: dp(8)
+                    padding: dp(10), dp(4)
+                    spacing: dp(4)
 
-                    MDIcon:
-                        icon: "file-document-outline"
-                        halign: "center"
-                        font_size: "56sp"
-                        theme_text_color: "Hint"
+                    MDBoxLayout:
+                        id: empty_state
+                        orientation: "vertical"
+                        adaptive_height: True
+                        padding: dp(32), dp(56)
+                        spacing: dp(8)
 
-                    MDLabel:
-                        text: "No documents yet"
-                        halign: "center"
-                        theme_text_color: "Hint"
+                        MDIcon:
+                            icon: "file-document-outline"
+                            halign: "center"
+                            font_size: "58sp"
+                            theme_text_color: "Hint"
 
-                    MDLabel:
-                        text: "Tap the camera button below to scan your first page"
-                        halign: "center"
-                        theme_text_color: "Hint"
-                        font_style: "Caption"
+                        MDLabel:
+                            text: "No documents yet"
+                            halign: "center"
+                            theme_text_color: "Hint"
+                            font_style: "H6"
 
-                MDList:
-                    id: recent_list
+                        MDLabel:
+                            text: "Tap the camera button to scan your first page"
+                            halign: "center"
+                            theme_text_color: "Hint"
+                            font_style: "Caption"
 
-        MDBoxLayout:
-            orientation: "horizontal"
-            size_hint_y: None
-            height: dp(72)
-            padding: dp(16), dp(8)
-            spacing: dp(24)
-            md_bg_color: app.theme_cls.bg_light
+                    MDList:
+                        id: recent_list
 
-            MDIconButton:
-                icon: "folder-multiple-outline"
-                on_release: root.go_documents()
+            MDBoxLayout:
+                id: bottom_nav_container
+                orientation: "vertical"
+                size_hint_y: None
+                height: dp(72)
 
-            Widget:
-
-            MDFloatingActionButton:
-                icon: "camera"
-                md_bg_color: app.theme_cls.primary_color
-                pos_hint: {"center_y": 0.5}
-                on_release: root.start_scan()
-
-            Widget:
-
-            MDIconButton:
-                icon: "cog-outline"
-                on_release: root.go_settings()
+        MDFloatingActionButton:
+            icon: "camera"
+            md_bg_color: 0.05, 0.52, 0.46, 1
+            pos_hint: {"right": 0.95, "y": 0.085}
+            on_release: root.start_scan()
 
 
 <DocumentListItem>:
     orientation: "horizontal"
     size_hint_y: None
-    height: dp(72)
+    height: dp(76)
     padding: dp(12), dp(4)
     spacing: dp(12)
 
     MDIcon:
         icon: root.type_icon
-        theme_text_color: "Primary"
+        theme_text_color: "Custom"
+        text_color: 0.05, 0.52, 0.46, 1
         size_hint_x: None
-        width: dp(32)
+        width: dp(42)
         pos_hint: {"center_y": 0.5}
 
     MDBoxLayout:
@@ -110,6 +115,8 @@
             font_style: "Subtitle1"
             shorten: True
             shorten_from: "right"
+            theme_text_color: "Custom"
+            text_color: 0.05, 0.09, 0.17, 1
 
         MDLabel:
             text: root.doc_meta
