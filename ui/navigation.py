@@ -75,6 +75,7 @@ class BottomNavItem(ButtonBehavior, MDBoxLayout):
             theme_text_color="Custom",
             font_size="27sp",
             size_hint_y=0.62,
+            pos_hint={"center_x": 0.5}
         )
         self._label = MDLabel(
             text=self.label,
@@ -83,6 +84,7 @@ class BottomNavItem(ButtonBehavior, MDBoxLayout):
             theme_text_color="Custom",
             font_style="Caption",
             size_hint_y=0.38,
+            pos_hint={"center_x": 0.5}
         )
 
         self.add_widget(self._icon)
