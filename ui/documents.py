@@ -1,337 +1,310 @@
 """
-Documents library - the full, searchable/sortable list of every saved
-document (Home only shows a short recent list). Also where bulk
-delete lives, via an explicit "Select" mode rather than a long-press
-gesture (simpler to get right without being able to test touch timing
-by hand in this environment, and just as usable).
+Home screen - the app's landing screen.
 
-Tapping a row reopens that document in the editor - reuses the same
-"discard unsaved pages?" guard as HomeScreen.open_document, since a
-session can just as easily be in progress when browsing from here.
+Responsibilities:
+- Show a live count + list of recently updated documents from the DB
+- Provide navigation into Scanner, Documents, and Settings
+- Provide a lightweight search-as-you-type over document name/OCR text
 
-Built entirely in Python (like ui/editor.py and ui/crop.py) since the
-row list and bulk-action bar are both dynamic.
+This screen does NOT touch the camera or OpenCV directly; scanning is
+owned entirely by ScannerScreen (kept per spec section 4's module
+boundaries).
 """
 
-from kivy.clock import Clock
+from datetime import datetime
+
+from kivy.core.window import Window
 from kivy.metrics import dp
-from kivy.properties import StringProperty
+from kivy.properties import StringProperty, ObjectProperty
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.widget import Widget
-from kivy.uix.scrollview import ScrollView
 from kivymd.uix.screen import MDScreen
-from kivymd.uix.boxlayout import MDBoxLayout
-from kivymd.uix.button import MDIconButton, MDFlatButton, MDRaisedButton
-from kivymd.uix.label import MDLabel
-from kivymd.uix.toolbar import MDTopAppBar
-from kivymd.uix.textfield import MDTextField
 from kivymd.uix.menu import MDDropdownMenu
 from kivymd.uix.dialog import MDDialog
+from kivymd.uix.textfield import MDTextField
 from kivymd.app import MDApp
 
-from ui.home import (
-    DOCUMENT_TYPE_ICONS,
-    _format_relative_time,
-    dismiss_open_menu,
-    keep_menu_on_screen,
-    register_open_menu,
-)
 from ui.navigation import BottomNavigationBar
 
-SORT_OPTIONS = {
-    "updated_desc": "Newest first",
-    "updated_asc": "Oldest first",
-    "name_asc": "Name (A-Z)",
-    "pages_desc": "Most pages",
+
+DOCUMENT_TYPE_ICONS = {
+    "document": "file-document-outline",
+    "id_card": "card-account-details-outline",
+    "receipt": "receipt",
+    "certificate": "certificate-outline",
+    "business_card": "card-account-mail-outline",
+    "passport": "passport",
 }
 
 
-def _sort_documents(documents, sort_key):
-    if sort_key == "updated_asc":
-        return sorted(documents, key=lambda d: d.get("updated_at", ""))
-    if sort_key == "name_asc":
-        return sorted(documents, key=lambda d: d.get("name", "").lower())
-    if sort_key == "pages_desc":
-        return sorted(documents, key=lambda d: d.get("page_count", 0), reverse=True)
-    return sorted(documents, key=lambda d: d.get("updated_at", ""), reverse=True)
+# --- Dropdown menu plumbing -------------------------------------------
+# KivyMD's MDDropdownMenu anchors itself to the caller widget, so an overflow
+# button sitting on the right edge of a row pushed the card past the screen
+# edge. The most recently opened menu is tracked here so it can be clamped back
+# inside the window, and so it can be closed before a dialog is shown - an open
+# menu used to stay visible underneath the dialog's dim layer.
+_open_menu = None
 
 
-class DocumentRow(BoxLayout):
-    """A document row for the library list. Separate from
-    ui.home.DocumentListItem (which Home also uses) because this one
-    needs a selection checkbox and Home's doesn't - keeping them
-    separate avoids coupling the two screens through one shared
-    widget's growing feature set."""
+def register_open_menu(menu):
+    global _open_menu
+    _open_menu = menu
 
+
+def dismiss_open_menu():
+    """Close the tracked dropdown, if any, before showing a modal dialog."""
+    global _open_menu
+    menu, _open_menu = _open_menu, None
+    if menu is not None:
+        try:
+            menu.dismiss()
+        except Exception:
+            pass
+
+
+def keep_menu_on_screen(menu, margin=dp(8)):
+    """Clamp an opened MDDropdownMenu card back inside the screen bounds."""
+    card = getattr(menu, "menu", None)
+    if card is None:
+        return
+    limit = Window.width - margin
+    if card.x + card.width > limit:
+        card.x = max(margin, limit - card.width)
+    if card.x < margin:
+        card.x = margin
+
+
+def _format_relative_time(iso_timestamp: str) -> str:
+    try:
+        then = datetime.fromisoformat(iso_timestamp)
+    except (TypeError, ValueError):
+        return ""
+    delta = datetime.utcnow() - then
+    seconds = delta.total_seconds()
+    if seconds < 60:
+        return "Just now"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} min ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)} hr ago"
+    if seconds < 172800:
+        return "Yesterday"
+    return then.strftime("%d %b %Y")
+
+
+class DocumentListItem(BoxLayout):
+    """One row in a document list (used by both Home's recent list and
+    Documents' full library). Kept as a plain BoxLayout (not MDList's
+    built-in item) so we can show a type icon, two-line metadata, and a
+    per-item overflow menu.
+
+    `controller` is any object exposing prompt_rename/export_document/
+    run_ocr/confirm_delete/open_document for this row's document dict -
+    Home and Documents both implement that same small interface rather
+    than this widget needing to know which screen it's on."""
+
+    doc_id = ObjectProperty(None)
     doc_name = StringProperty("")
     doc_meta = StringProperty("")
+    type_icon = StringProperty("file-document-outline")
 
-    def __init__(self, document, controller, **kwargs):
-        super().__init__(orientation="horizontal", size_hint_y=None, height=dp(72),
-                          padding=(dp(12), dp(4)), spacing=dp(12), **kwargs)
+    def __init__(self, document: dict, controller, **kwargs):
+        super().__init__(**kwargs)
         self.document = document
         self.controller = controller
-
-        self.checkbox = MDIconButton(
-            icon="checkbox-blank-circle-outline",
-            size_hint_x=None,
-            width=dp(40) if controller.selection_mode else 0,
-            opacity=1 if controller.selection_mode else 0,
-            on_release=lambda x: controller.toggle_select(document["id"]),
+        self.doc_id = document["id"]
+        self.doc_name = document["name"]
+        self.type_icon = DOCUMENT_TYPE_ICONS.get(
+            document.get("document_type", "document"), "file-document-outline"
         )
-        self.add_widget(self.checkbox)
-        self._update_checkbox()
-
-        icon = MDIconButton(
-            icon=DOCUMENT_TYPE_ICONS.get(document.get("document_type", "document"), "file-document-outline"),
-            disabled=True, size_hint_x=None, width=dp(40),
-        )
-        self.add_widget(icon)
-
-        text_col = MDBoxLayout(orientation="vertical")
         page_count = document.get("page_count", 0)
         page_label = "1 page" if page_count == 1 else f"{page_count} pages"
         when = _format_relative_time(document.get("updated_at", ""))
-        text_col.add_widget(MDLabel(text=document["name"], font_style="Subtitle1", shorten=True))
-        text_col.add_widget(MDLabel(
-            text=f"{page_label} • {when}" if when else page_label,
-            theme_text_color="Secondary", font_style="Caption",
-        ))
-        self.add_widget(text_col)
+        self.doc_meta = f"{page_label} • {when}" if when else page_label
+        self._menu = None
 
-        self.menu_button = MDIconButton(
-            icon="dots-vertical",
-            size_hint_x=None,
-            width=0 if controller.selection_mode else dp(40),
-            opacity=0 if controller.selection_mode else 1,
-            on_release=self._open_menu,
-        )
-        self.add_widget(self.menu_button)
-
-    def _update_checkbox(self):
-        selected = self.document["id"] in self.controller.selected_ids
-        self.checkbox.icon = "checkbox-marked-circle" if selected else "checkbox-blank-circle-outline"
-
-    def _open_menu(self, caller):
+    def open_menu(self, caller):
         items = [
-            {"text": "Rename", "on_release": lambda: self.controller.prompt_rename(self.document)},
-            {"text": "Export", "on_release": lambda: self.controller.export_document(self.document)},
-            {"text": "Run OCR", "on_release": lambda: self.controller.run_ocr(self.document)},
-            {"text": "Delete", "on_release": lambda: self.controller.confirm_delete(self.document)},
+            {"text": "Rename", "on_release": self._rename},
+            {"text": "Export", "on_release": self._export},
+            {"text": "Run OCR", "on_release": self._run_ocr},
+            {"text": "Delete", "on_release": self._delete},
         ]
         menu = MDDropdownMenu(caller=caller, items=items, width_mult=3)
-        for item in items:
-            original = item["on_release"]
-            item["on_release"] = (lambda o=original, m=menu: (m.dismiss(), o()))
-        menu.items = items
+        self._menu = menu
         register_open_menu(menu)
         menu.open()
-        # The button sits on the right edge of the row, so open() can anchor the
-        # card past the screen - clamp it back in, and re-check after the card
-        # has been laid out for this frame.
+        # open() anchors the card to the caller; pull it back on-screen and
+        # re-check once the card has been laid out for this frame.
         keep_menu_on_screen(menu)
+        from kivy.clock import Clock
+
         Clock.schedule_once(lambda dt: keep_menu_on_screen(menu), 0)
 
+    def _dismiss_menu(self):
+        if self._menu:
+            self._menu.dismiss()
+            self._menu = None
+
+    def _rename(self, *args):
+        self._dismiss_menu()
+        self.controller.prompt_rename(self.document)
+
+    def _export(self, *args):
+        self._dismiss_menu()
+        self.controller.export_document(self.document)
+
+    def _run_ocr(self, *args):
+        self._dismiss_menu()
+        self.controller.run_ocr(self.document)
+
+    def _delete(self, *args):
+        self._dismiss_menu()
+        self.controller.confirm_delete(self.document)
+
+    def on_release_row(self):
+        self.controller.open_document(self.document)
+
     def on_touch_up(self, touch):
-        if super().on_touch_up(touch):
+        # Let children (the overflow menu button) handle their own tap first
+        result = super().on_touch_up(touch)
+        
+        # Check if the touch is on the 3-dot menu button to stop propagation
+        for child in self.children:
+            if getattr(child, 'icon', '') == 'dots-vertical' and child.collide_point(*touch.pos):
+                return True
+                
+        if result:
             return True
+            
+        # Treat as row click only if children didn't consume the touch
         if self.collide_point(*touch.pos):
-            if self.controller.selection_mode:
-                self.controller.toggle_select(self.document["id"])
-            else:
-                self.controller.open_document(self.document)
+            self.on_release_row()
             return True
         return False
 
 
-class DocumentsScreen(MDScreen):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.selection_mode = False
-        self.selected_ids = set()
-        self._search_query = None
-        self._sort_key = "updated_desc"
-        self._documents = []
+class HomeScreen(MDScreen):
+    recent_list = ObjectProperty(None)
+    empty_state = ObjectProperty(None)
+    doc_count_label = ObjectProperty(None)
+    bottom_nav_container = ObjectProperty(None)
 
-        root = MDBoxLayout(orientation="vertical")
+    RECENT_LIMIT = 8
 
-        self.toolbar = MDTopAppBar(title="Files", elevation=0)
-        self._set_default_toolbar_actions()
-        root.add_widget(self.toolbar)
-
-        self.search_field = MDTextField(
-            hint_text="Search documents", size_hint_y=None, height=dp(48),
-            padding=(dp(16), dp(8)),
-        )
-        self.search_field.bind(text=lambda i, v: self._on_search_text(v))
-        self.search_field.height = dp(56)
-        self.search_field.opacity = 1
-        root.add_widget(self.search_field)
-
-        # Empty state, sized explicitly and collapsed to zero height whenever
-        # the library has documents. With its previous default size_hint_y=1
-        # this label silently claimed half of the screen, squeezing the list
-        # into the top half so a single row looked vertically centred.
-        self.empty_label = MDLabel(
-            text="No documents saved yet", halign="center",
-            theme_text_color="Hint", opacity=0,
-            size_hint_y=None, height=0,
-        )
-        root.add_widget(self.empty_label)
-
-        scroll = ScrollView()
-        self.list_box = MDBoxLayout(orientation="vertical", adaptive_height=True)
-        scroll.add_widget(self.list_box)
-        root.add_widget(scroll)
-
-        self.bulk_bar = MDBoxLayout(
-            orientation="horizontal", size_hint_y=None, height=0, opacity=0,
-            padding=(dp(16), dp(8)), spacing=dp(12),
-        )
-        self.selection_label = MDLabel(text="0 selected", theme_text_color="Secondary")
-        self.bulk_bar.add_widget(self.selection_label)
-        self.bulk_bar.add_widget(Widget())
-        self.bulk_bar.add_widget(MDFlatButton(text="SELECT ALL", on_release=lambda x: self.select_all()))
-        self.bulk_bar.add_widget(MDRaisedButton(text="DELETE", on_release=lambda x: self.delete_selected()))
-        root.add_widget(self.bulk_bar)
-        root.add_widget(BottomNavigationBar(selected="documents"))
-
-        self.add_widget(root)
-
-    def _set_default_toolbar_actions(self):
-        self.toolbar.right_action_items = [
-            ["sort", lambda x: self.open_sort_menu()],
-            ["checkbox-multiple-marked-outline", lambda x: self.toggle_selection_mode()],
-        ]
-
-    # ---- Lifecycle -----------------------------------------------------
+    def on_kv_post(self, base_widget):
+        if self.bottom_nav_container and not self.bottom_nav_container.children:
+            self.bottom_nav_container.add_widget(BottomNavigationBar(selected="home"))
 
     def on_pre_enter(self, *args):
         self.refresh_documents()
 
-    def refresh_documents(self):
+    def refresh_documents(self, search_query: str = None):
         app = MDApp.get_running_app()
-        documents = app.db.list_documents(search=self._search_query or None)
-        documents = _sort_documents(documents, self._sort_key)
-        self._documents = documents
+        documents = app.db.list_documents(search=search_query)
+        total = app.db.count_documents()
 
-        self.list_box.clear_widgets()
-        for document in documents:
-            self.list_box.add_widget(DocumentRow(document, controller=self))
+        self.doc_count_label.text = "1 document" if total == 1 else f"{total} documents"
 
-        self.empty_label.opacity = 1 if not documents else 0
-        self.empty_label.height = dp(160) if not documents else 0
-        self._update_bulk_bar()
+        self.recent_list.clear_widgets()
+        # Collapse the empty state to zero height, not just fade it out: an
+        # invisible-but-present block still reserved ~240dp at the top of the
+        # list, which pushed the first row down so it looked vertically centred
+        # instead of top-aligned under the search bar.
+        self.empty_state.opacity = 1 if not documents else 0
+        self.empty_state.height = dp(240) if not documents else 0
+        self.empty_state.disabled = bool(documents)
 
-    # ---- Search -----------------------------------------------------
+        for document in documents[: self.RECENT_LIMIT]:
+            item = DocumentListItem(document=document, controller=self)
+            self.recent_list.add_widget(item)
 
-    def toggle_search(self):
-        showing = self.search_field.height > 0
-        if showing:
-            self.search_field.height = 0
-            self.search_field.opacity = 0
-            self.search_field.text = ""
-            self._search_query = None
-        else:
-            self.search_field.height = dp(48)
-            self.search_field.opacity = 1
-        self.refresh_documents()
+    # ---- Navigation --------------------------------------------------
 
-    def _on_search_text(self, value):
-        self._search_query = value.strip() or None
-        self.refresh_documents()
-
-    # ---- Sort -----------------------------------------------------
-
-    def open_sort_menu(self):
-        items = [
-            {"text": label, "on_release": lambda k=key: self._set_sort(k)}
-            for key, label in SORT_OPTIONS.items()
-        ]
-        menu = MDDropdownMenu(caller=self.toolbar, items=items, width_mult=4)
-        for item in items:
-            original = item["on_release"]
-            item["on_release"] = (lambda o=original, m=menu: (m.dismiss(), o()))
-        menu.items = items
-        register_open_menu(menu)
-        menu.open()
-        # The sort action lives at the right end of the toolbar, so the same
-        # right-edge overflow applies here.
-        keep_menu_on_screen(menu)
-        Clock.schedule_once(lambda dt: keep_menu_on_screen(menu), 0)
-
-    def _set_sort(self, key):
-        self._sort_key = key
-        self.refresh_documents()
-
-    # ---- Selection mode -----------------------------------------------------
-
-    def toggle_selection_mode(self):
-        self.selection_mode = not self.selection_mode
-        self.selected_ids = set()
-        self.refresh_documents()
-
-    def toggle_select(self, document_id):
-        if document_id in self.selected_ids:
-            self.selected_ids.discard(document_id)
-        else:
-            self.selected_ids.add(document_id)
-        self.refresh_documents()
-
-    def select_all(self):
-        self.selected_ids = {d["id"] for d in self._documents}
-        self.refresh_documents()
-
-    def _update_bulk_bar(self):
-        if self.selection_mode:
-            self.bulk_bar.height = dp(56)
-            self.bulk_bar.opacity = 1
-            count = len(self.selected_ids)
-            self.selection_label.text = "1 selected" if count == 1 else f"{count} selected"
-        else:
-            self.bulk_bar.height = 0
-            self.bulk_bar.opacity = 0
-
-    def delete_selected(self):
-        if not self.selected_ids:
-            return
+    def start_scan(self):
         app = MDApp.get_running_app()
-        count = len(self.selected_ids)
+        app.active_session_pages = []
+        app.editing_document_id = None  # a brand-new scan, not continuing a saved one
+        app.go_to("scanner")
 
-        def do_delete(*a):
-            for doc_id in list(self.selected_ids):
-                app.db.delete_document(doc_id)
-            self.selected_ids = set()
-            self.selection_mode = False
-            dialog.dismiss()
-            self.refresh_documents()
+    def go_documents(self):
+        MDApp.get_running_app().go_to("documents")
 
-        dialog = MDDialog(
-            title=f"Delete {count} document{'s' if count != 1 else ''}?",
-            text="This cannot be undone.",
-            buttons=[
-                MDFlatButton(text="CANCEL", on_release=lambda *a: dialog.dismiss()),
-                MDFlatButton(text="DELETE", on_release=do_delete),
-            ],
-        )
-        dialog.open()
+    def go_settings(self):
+        MDApp.get_running_app().go_to("settings")
 
-    # ---- Per-document actions (DocumentRow's overflow menu) -----------------------------------------------------
+    def go_tools(self):
+        MDApp.get_running_app().go_to("tools")
 
-    def prompt_rename(self, document):
+    def open_document(self, document: dict):
         dismiss_open_menu()
         app = MDApp.get_running_app()
+        if app.active_session_pages:
+            # Opening a saved document replaces the in-progress session
+            # in app.active_session_pages - warn rather than silently
+            # discard whatever the user hasn't saved yet.
+            from kivymd.uix.button import MDFlatButton
+
+            def do_open(*a):
+                dialog.dismiss()
+                self._load_document_into_editor(document)
+
+            dialog = MDDialog(
+                title="Discard unsaved pages?",
+                text="You have an unsaved scan in progress. Opening this "
+                     "document will discard it.",
+                buttons=[
+                    MDFlatButton(text="CANCEL", on_release=lambda *a: dialog.dismiss()),
+                    MDFlatButton(text="DISCARD & OPEN", on_release=do_open),
+                ],
+            )
+            dialog.open()
+        else:
+            self._load_document_into_editor(document)
+
+    def _load_document_into_editor(self, document: dict):
+        app = MDApp.get_running_app()
+        pages = app.db.get_pages(document["id"])
+        app.active_session_pages = list(pages)
+        app.editing_document_id = document["id"]
+        app.latest_capture_path = pages[-1] if pages else None
+        app.latest_raw_path = None
+        app.go_to("editor")
+
+    # ---- Search --------------------------------------------------------
+
+    def open_search(self):
+        self._search_field = MDTextField(hint_text="Search documents")
+        self._search_dialog = MDDialog(
+            title="Search",
+            type="custom",
+            content_cls=self._search_field,
+            buttons=[],
+        )
+        self._search_field.bind(text=self._on_search_text)
+        self._search_dialog.open()
+
+    def _on_search_text(self, instance, value):
+        self.refresh_documents(search_query=value.strip() or None)
+
+    # ---- Item actions --------------------------------------------------
+
+    def prompt_rename(self, document: dict):
+        dismiss_open_menu()
         field = MDTextField(text=document["name"], hint_text="Document name")
 
-        def do_rename(*a):
+        def do_rename(*args):
             new_name = field.text.strip()
             if new_name:
-                app.db.rename_document(document["id"], new_name)
+                MDApp.get_running_app().db.rename_document(document["id"], new_name)
                 self.refresh_documents()
             dialog.dismiss()
 
+        from kivymd.uix.button import MDFlatButton
+
         dialog = MDDialog(
-            title="Rename document", type="custom", content_cls=field,
+            title="Rename document",
+            type="custom",
+            content_cls=field,
             buttons=[
                 MDFlatButton(text="CANCEL", on_release=lambda *a: dialog.dismiss()),
                 MDFlatButton(text="SAVE", on_release=do_rename),
@@ -339,12 +312,12 @@ class DocumentsScreen(MDScreen):
         )
         dialog.open()
 
-    def confirm_delete(self, document):
+    def confirm_delete(self, document: dict):
         dismiss_open_menu()
-        app = MDApp.get_running_app()
+        from kivymd.uix.button import MDFlatButton
 
-        def do_delete(*a):
-            app.db.delete_document(document["id"])
+        def do_delete(*args):
+            MDApp.get_running_app().db.delete_document(document["id"])
             self.refresh_documents()
             dialog.dismiss()
 
@@ -358,7 +331,7 @@ class DocumentsScreen(MDScreen):
         )
         dialog.open()
 
-    def export_document(self, document):
+    def export_document(self, document: dict):
         dismiss_open_menu()
         app = MDApp.get_running_app()
         pages = app.db.get_pages(
@@ -511,50 +484,7 @@ class DocumentsScreen(MDScreen):
             0,
         )
 
-    def _on_export_done(self, success, path_or_error):
-        from kivy.utils import platform
-        if success:
-            # Only successful export creates a notification. Opening/editing
-            # an existing document, Done, rotate, crop, filter, rename, etc.
-            # never call the notification layer.
-            from storage.notifications import notify_export_saved
-            notify_export_saved(path_or_error)
-
-            buttons = [MDFlatButton(text="OK", on_release=lambda *a: dialog.dismiss())]
-            if platform == "android":
-                buttons.insert(0, MDFlatButton(
-                    text="SHARE",
-                    on_release=lambda *a: self._share_exported(dialog, path_or_error),
-                ))
-            dialog = MDDialog(
-                title="Export complete",
-                text=f"Saved to:\n{path_or_error}",
-                buttons=buttons,
-            )
-        else:
-            dialog = MDDialog(
-                title="Export failed",
-                text=path_or_error,
-                buttons=[MDFlatButton(text="OK", on_release=lambda *a: dialog.dismiss())],
-            )
-        dialog.open()
-
-    def _share_exported(self, dialog, file_path):
-        dialog.dismiss()
-        from storage.share import share_file
-        try:
-            share_file(file_path)
-        except Exception as e:
-            error_dialog = MDDialog(
-                title="Share failed",
-                text=str(e),
-                buttons=[MDFlatButton(text="OK", on_release=lambda *a: error_dialog.dismiss())],
-            )
-            error_dialog.open()
-
-    # ---- Open / navigation -----------------------------------------------------
-
-    def run_ocr(self, document):
+    def run_ocr(self, document: dict):
         dismiss_open_menu()
         app = MDApp.get_running_app()
         pages = app.db.get_pages(document["id"])
@@ -562,6 +492,8 @@ class DocumentsScreen(MDScreen):
             return
 
         from kivy.utils import platform
+        from kivymd.uix.boxlayout import MDBoxLayout
+        from kivymd.uix.button import MDFlatButton
 
         if platform != "android":
             dialog = MDDialog(
@@ -619,11 +551,13 @@ class DocumentsScreen(MDScreen):
             if success:
                 app.db.update_ocr_text(document["id"], payload)
                 self.refresh_documents()
-            self._on_ocr_done(success, payload)
+            self._on_ocr_done(document, success, payload)
 
         Clock.schedule_once(finish, 0)
 
-    def _on_ocr_done(self, success, text_or_error):
+    def _on_ocr_done(self, document, success: bool, text_or_error: str):
+        from kivymd.uix.button import MDFlatButton
+
         if success:
             preview = text_or_error[:300] + ("..." if len(text_or_error) > 300 else "")
             dialog = MDDialog(
@@ -639,35 +573,44 @@ class DocumentsScreen(MDScreen):
             )
         dialog.open()
 
-    def open_document(self, document):
-        dismiss_open_menu()
-        app = MDApp.get_running_app()
-        if app.active_session_pages:
-            def do_open(*a):
-                dialog.dismiss()
-                self._load_document_into_editor(document)
+    def _on_export_done(self, success: bool, path_or_error: str):
+        from kivy.utils import platform
+        from kivymd.uix.button import MDFlatButton
+        if success:
+            # Export is a genuine new output file, so it may notify. This is
+            # deliberately NOT called from edit/done/crop/filter actions.
+            from storage.notifications import notify_export_saved
+            notify_export_saved(path_or_error)
 
+            buttons = [MDFlatButton(text="OK", on_release=lambda *a: dialog.dismiss())]
+            if platform == "android":
+                buttons.insert(0, MDFlatButton(
+                    text="SHARE",
+                    on_release=lambda *a: self._share_exported(dialog, path_or_error),
+                ))
             dialog = MDDialog(
-                title="Discard unsaved pages?",
-                text="You have an unsaved scan in progress. Opening this "
-                     "document will discard it.",
-                buttons=[
-                    MDFlatButton(text="CANCEL", on_release=lambda *a: dialog.dismiss()),
-                    MDFlatButton(text="DISCARD & OPEN", on_release=do_open),
-                ],
+                title="Export complete",
+                text=f"Saved to:\n{path_or_error}",
+                buttons=buttons,
             )
-            dialog.open()
         else:
-            self._load_document_into_editor(document)
+            dialog = MDDialog(
+                title="Export failed",
+                text=path_or_error,
+                buttons=[MDFlatButton(text="OK", on_release=lambda *a: dialog.dismiss())],
+            )
+        dialog.open()
 
-    def _load_document_into_editor(self, document):
-        app = MDApp.get_running_app()
-        pages = app.db.get_pages(document["id"])
-        app.active_session_pages = list(pages)
-        app.editing_document_id = document["id"]
-        app.latest_capture_path = pages[-1] if pages else None
-        app.latest_raw_path = None
-        app.go_to("editor")
-
-    def go_home(self):
-        MDApp.get_running_app().go_to("home")
+    def _share_exported(self, dialog, file_path: str):
+        dialog.dismiss()
+        from storage.share import share_file
+        from kivymd.uix.button import MDFlatButton
+        try:
+            share_file(file_path)
+        except Exception as e:
+            error_dialog = MDDialog(
+                title="Share failed",
+                text=str(e),
+                buttons=[MDFlatButton(text="OK", on_release=lambda *a: error_dialog.dismiss())],
+            )
+            error_dialog.open()
