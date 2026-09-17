@@ -54,19 +54,21 @@ class ScannerScreen(MDScreen):
     capture_mode = StringProperty("single")   # single | batch
     scan_type = StringProperty("scan")        # scan | id_card
     capture_busy = BooleanProperty(False)
+    flash_on = BooleanProperty(False)
+    enhance_on = BooleanProperty(True)
+    hd_mode = BooleanProperty(True)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
         self.camera_widget = None
-        self._flash_on = False
         self._file_picker = FilePicker()
         self._auto_capture = AutoCaptureController(
-            stability_duration=1.15,
-            corner_movement_ratio=0.018,
-            centroid_movement_ratio=0.012,
-            max_area_change_ratio=0.08,
-            minimum_stable_updates=4,
+            stability_duration=1.35,
+            corner_movement_ratio=0.014,
+            centroid_movement_ratio=0.010,
+            max_area_change_ratio=0.065,
+            minimum_stable_updates=5,
         )
 
     # ------------------------------------------------------------------
@@ -109,6 +111,7 @@ class ScannerScreen(MDScreen):
 
         self.capture_busy = False
         self.document_detected = False
+        self.flash_on = False
         self._auto_capture.reset()
         self.ring_progress = 0.0
 
@@ -632,10 +635,43 @@ class ScannerScreen(MDScreen):
         self._update_hint()
 
     def toggle_flash(self):
-        # Keep this as a UI state only. Camera4Kivy torch/flash support
-        # differs by camera provider/device; reconnecting the camera on
-        # every tap is more likely to interrupt capture than help.
-        self._flash_on = not self._flash_on
+        if self.camera_widget is None:
+            self._show_info(
+                "Flash",
+                "Camera is not ready yet.",
+            )
+            return
+
+        requested = not self.flash_on
+        success = self.camera_widget.set_torch(requested)
+
+        if success:
+            self.flash_on = requested
+        else:
+            self.flash_on = False
+
+    def toggle_enhance(self):
+        """
+        UI control matching the reference scanner.
+
+        Perspective correction and document enhancement already happen
+        after capture; this switch controls the visual state and leaves
+        the stable live detector enabled.
+        """
+        self.enhance_on = not self.enhance_on
+
+    def toggle_hd(self):
+        # Camera4Kivy uses the highest available sensor resolution by
+        # default. Keep HD enabled by default; this button mirrors the
+        # reference scanner control without reconnecting CameraX.
+        self.hd_mode = not self.hd_mode
+
+    def open_more(self):
+        self._show_info(
+            "Scanner options",
+            "Use Single/Batch for page capture and Scan/ID Cards for "
+            "document type. Pinch to zoom and tap the preview to focus.",
+        )
 
     # ------------------------------------------------------------------
     # Navigation
