@@ -51,20 +51,34 @@
                     padding: dp(10), dp(4)
                     spacing: dp(4)
 
+                    # Empty state: one vertically stacked, horizontally centred
+                    # group. The icon is wrapped in an AnchorLayout and given an
+                    # explicit size because MDIcon sizes itself to its glyph -
+                    # inside a BoxLayout it stayed pinned to the left edge while
+                    # the labels below it were centred.
                     MDBoxLayout:
                         id: empty_state
                         orientation: "vertical"
-                        adaptive_height: True
-                        padding: dp(32), dp(56)
-                        spacing: dp(8)
+                        size_hint_y: None
+                        height: dp(240)
+                        padding: dp(8), dp(48), dp(8), 0
+                        spacing: dp(10)
 
-                        MDIcon:
-                            icon: "file-document-outline"
-                            halign: "center"
-                            font_size: "58sp"
-                            theme_text_color: "Hint"
+                        AnchorLayout:
+                            anchor_x: "center"
+                            anchor_y: "center"
                             size_hint_y: None
-                            height: dp(64)
+                            height: dp(76)
+
+                            MDIcon:
+                                icon: "file-document-outline"
+                                theme_text_color: "Hint"
+                                font_size: "58sp"
+                                size_hint: None, None
+                                size: dp(72), dp(72)
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
 
                         MDLabel:
                             text: "No documents yet"
@@ -86,6 +100,8 @@
                     MDList:
                         id: recent_list
 
+            # BottomNavigationBar draws its own divider + top shadow, so the bar
+            # no longer merges into the page background.
             MDBoxLayout:
                 id: bottom_nav_container
                 orientation: "vertical"
@@ -95,7 +111,10 @@
         MDFloatingActionButton:
             icon: "camera"
             md_bg_color: 0.05, 0.52, 0.46, 1
-            pos_hint: {"right": 0.94, "y": 0.105}
+            # Centred over the Settings tab (a 25% nav cell is centred at 0.875)
+            # and lifted 16dp above the bar, instead of an arbitrary right offset
+            # that never lined up with the tab or the screen margin.
+            pos_hint: {"center_x": 0.875, "y": (bottom_nav_container.height + dp(16)) / max(root.height, dp(1))}
             on_release: root.start_scan()
 
 
