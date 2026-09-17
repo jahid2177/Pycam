@@ -22,6 +22,8 @@ from kivymd.uix.toolbar import MDTopAppBar
 from kivymd.uix.selectioncontrol import MDSwitch
 from kivymd.app import MDApp
 
+from ui.navigation import BottomNavigationBar
+
 SELECTED_COLOR = (0.20, 0.85, 0.35, 1)
 
 
@@ -61,8 +63,7 @@ class SettingsScreen(MDScreen):
 
         root = MDBoxLayout(orientation="vertical")
 
-        toolbar = MDTopAppBar(title="Settings", elevation=2)
-        toolbar.left_action_items = [["arrow-left", lambda x: self.go_home()]]
+        toolbar = MDTopAppBar(title="Settings", elevation=0)
         root.add_widget(toolbar)
 
         body = MDBoxLayout(orientation="vertical", padding=(0, dp(8)))
@@ -105,6 +106,7 @@ class SettingsScreen(MDScreen):
 
         body.add_widget(Widget())  # push everything above to the top
         root.add_widget(body)
+        root.add_widget(BottomNavigationBar(selected="settings"))
 
         self.add_widget(root)
 

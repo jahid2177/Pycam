@@ -29,6 +29,7 @@ from kivymd.uix.dialog import MDDialog
 from kivymd.app import MDApp
 
 from ui.home import DOCUMENT_TYPE_ICONS, _format_relative_time
+from ui.navigation import BottomNavigationBar
 
 SORT_OPTIONS = {
     "updated_desc": "Newest first",
@@ -141,8 +142,7 @@ class DocumentsScreen(MDScreen):
 
         root = MDBoxLayout(orientation="vertical")
 
-        self.toolbar = MDTopAppBar(title="My Documents", elevation=2)
-        self.toolbar.left_action_items = [["arrow-left", lambda x: self.go_home()]]
+        self.toolbar = MDTopAppBar(title="Files", elevation=0)
         self._set_default_toolbar_actions()
         root.add_widget(self.toolbar)
 
@@ -151,8 +151,8 @@ class DocumentsScreen(MDScreen):
             padding=(dp(16), dp(8)),
         )
         self.search_field.bind(text=lambda i, v: self._on_search_text(v))
-        self.search_field.height = 0
-        self.search_field.opacity = 0
+        self.search_field.height = dp(56)
+        self.search_field.opacity = 1
         root.add_widget(self.search_field)
 
         scroll = ScrollView()
@@ -176,12 +176,12 @@ class DocumentsScreen(MDScreen):
         self.bulk_bar.add_widget(MDFlatButton(text="SELECT ALL", on_release=lambda x: self.select_all()))
         self.bulk_bar.add_widget(MDRaisedButton(text="DELETE", on_release=lambda x: self.delete_selected()))
         root.add_widget(self.bulk_bar)
+        root.add_widget(BottomNavigationBar(selected="documents"))
 
         self.add_widget(root)
 
     def _set_default_toolbar_actions(self):
         self.toolbar.right_action_items = [
-            ["magnify", lambda x: self.toggle_search()],
             ["sort", lambda x: self.open_sort_menu()],
             ["checkbox-multiple-marked-outline", lambda x: self.toggle_selection_mode()],
         ]

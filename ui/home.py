@@ -21,6 +21,8 @@ from kivymd.uix.dialog import MDDialog
 from kivymd.uix.textfield import MDTextField
 from kivymd.app import MDApp
 
+from ui.navigation import BottomNavigationBar
+
 
 DOCUMENT_TYPE_ICONS = {
     "document": "file-document-outline",
@@ -133,8 +135,13 @@ class HomeScreen(MDScreen):
     recent_list = ObjectProperty(None)
     empty_state = ObjectProperty(None)
     doc_count_label = ObjectProperty(None)
+    bottom_nav_container = ObjectProperty(None)
 
     RECENT_LIMIT = 8
+
+    def on_kv_post(self, base_widget):
+        if self.bottom_nav_container and not self.bottom_nav_container.children:
+            self.bottom_nav_container.add_widget(BottomNavigationBar(selected="home"))
 
     def on_pre_enter(self, *args):
         self.refresh_documents()
@@ -167,6 +174,9 @@ class HomeScreen(MDScreen):
 
     def go_settings(self):
         MDApp.get_running_app().go_to("settings")
+
+    def go_tools(self):
+        MDApp.get_running_app().go_to("tools")
 
     def open_document(self, document: dict):
         app = MDApp.get_running_app()

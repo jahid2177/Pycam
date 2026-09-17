@@ -11,6 +11,7 @@ Changes in this version:
 """
 
 import os
+import shutil
 import threading
 import time
 
@@ -28,6 +29,7 @@ from kivymd.uix.screen import MDScreen
 
 from image_processing.perspective import correct_document_file
 from scanner.auto_capture import AutoCaptureController
+from storage.file_picker import FilePicker, copy_to_app_temp, render_pdf_to_images
 from scanner.camera import (
     CAMERA_AVAILABLE,
     DocumentCamera,
@@ -58,6 +60,7 @@ class ScannerScreen(MDScreen):
 
         self.camera_widget = None
         self._flash_on = False
+        self._file_picker = FilePicker()
         self._auto_capture = AutoCaptureController(
             stability_duration=1.15,
             corner_movement_ratio=0.018,
@@ -456,6 +459,143 @@ class ScannerScreen(MDScreen):
         self._auto_capture.reset()
         self.ring_progress = 0.0
         self._update_hint()
+
+    # ------------------------------------------------------------------
+    # Import from Gallery / Files
+    # ------------------------------------------------------------------
+
+    def pick_image(self):
+        if self.capture_busy:
+            return
+        self._file_picker.choose_image(
+            self._on_image_picked,
+            self._on_picker_error,
+        )
+
+    def pick_pdf(self):
+        if self.capture_busy:
+            return
+        self._file_picker.choose_pdf(
+            self._on_pdf_picked,
+            self._on_picker_error,
+        )
+
+    def _on_picker_error(self, message):
+        self._show_info("Import", str(message))
+
+    def _on_image_picked(self, selected_path):
+        app = MDApp.get_running_app()
+
+        try:
+            private_path = copy_to_app_temp(
+                selected_path,
+                app.storage,
+                prefix="gallery",
+            )
+        except Exception as exc:
+            self._show_info(
+                "Image import failed",
+                str(exc),
+            )
+            return
+
+        self.capture_busy = True
+        if self.shutter_button:
+            self.shutter_button.disabled = True
+        if self.hint_label:
+            self.hint_label.text = "Importing image..."
+
+        app.latest_raw_path = private_path
+
+        threading.Thread(
+            target=self._process_capture,
+            args=(private_path,),
+            daemon=True,
+        ).start()
+
+    def _on_pdf_picked(self, selected_path):
+        app = MDApp.get_running_app()
+
+        try:
+            private_pdf = copy_to_app_temp(
+                selected_path,
+                app.storage,
+                prefix="pdf",
+            )
+        except Exception as exc:
+            self._show_info(
+                "PDF import failed",
+                str(exc),
+            )
+            return
+
+        self.capture_busy = True
+        if self.shutter_button:
+            self.shutter_button.disabled = True
+        if self.hint_label:
+            self.hint_label.text = "Importing PDF..."
+
+        threading.Thread(
+            target=self._import_pdf_worker,
+            args=(private_pdf,),
+            daemon=True,
+        ).start()
+
+    def _import_pdf_worker(self, pdf_path):
+        app = MDApp.get_running_app()
+        output_dir = app.storage.get_temp_path(
+            f"pdf_pages_{int(time.time() * 1000)}"
+        )
+
+        try:
+            pages = render_pdf_to_images(
+                pdf_path,
+                output_dir,
+            )
+            Clock.schedule_once(
+                lambda dt, items=pages:
+                    self._on_pdf_imported(items),
+                0,
+            )
+        except Exception as exc:
+            Clock.schedule_once(
+                lambda dt, message=str(exc):
+                    self._on_pdf_import_failed(message),
+                0,
+            )
+
+    def _on_pdf_imported(self, pages):
+        self.capture_busy = False
+
+        if self.shutter_button:
+            self.shutter_button.disabled = False
+
+        if not pages:
+            self._show_info(
+                "PDF import failed",
+                "The selected PDF contains no readable pages.",
+            )
+            self._update_hint()
+            return
+
+        app = MDApp.get_running_app()
+        app.active_session_pages = list(pages)
+        app.latest_capture_path = pages[-1]
+        app.latest_raw_path = None
+        self._update_page_count()
+        app.go_to("editor")
+
+    def _on_pdf_import_failed(self, message):
+        self.capture_busy = False
+
+        if self.shutter_button:
+            self.shutter_button.disabled = False
+
+        self._update_hint()
+        self._show_info(
+            "PDF import failed",
+            message,
+        )
 
     # ------------------------------------------------------------------
     # Auto capture / flash
