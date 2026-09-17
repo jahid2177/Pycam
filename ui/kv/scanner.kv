@@ -7,16 +7,15 @@
     hint_label: hint_label
     auto_ring: auto_ring
 
-    MDBoxLayout:
-        orientation: "vertical"
-        spacing: 0
-        padding: 0
+    # Changed from MDBoxLayout (vertical) to MDFloatLayout to allow overlapping
+    MDFloatLayout:
         md_bg_color: 0, 0, 0, 1
 
-        # Camera preview uses ALL available space above Single / Batch.
+        # Camera preview now takes up the entire screen (100% width and height)
         FloatLayout:
             id: camera_container
-            size_hint_y: 1
+            size_hint: 1, 1
+            pos_hint: {"center_x": 0.5, "center_y": 0.5}
 
             canvas.before:
                 Color:
@@ -25,6 +24,7 @@
                     pos: self.pos
                     size: self.size
 
+            # --- Top Controls (Floating on top of camera) ---
             MDIconButton:
                 icon: "close"
                 theme_text_color: "Custom"
@@ -161,14 +161,15 @@
                     pos_hint: {"center_x": 0.5}
                     on_release: root.request_permission()
 
-        # Bottom controls start immediately when camera preview ends.
+        # --- Bottom Controls (Pinned to bottom and semi-transparent) ---
         MDBoxLayout:
             orientation: "vertical"
             size_hint_y: None
             height: dp(190)
+            pos_hint: {"bottom": 1}  # Keeps the controls pinned to the bottom of the screen
             padding: dp(10), 0, dp(10), dp(6)
             spacing: 0
-            md_bg_color: 0, 0, 0, 1
+            md_bg_color: 0, 0, 0, 0.65  # Semi-transparent black so the camera shows through
 
             MDBoxLayout:
                 orientation: "horizontal"
