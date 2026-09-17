@@ -334,62 +334,165 @@ class DocumentsScreen(MDScreen):
 
     def export_document(self, document):
         app = MDApp.get_running_app()
-        pages = app.db.get_pages(document["id"])
+        pages = app.db.get_pages(
+            document["id"]
+        )
         if not pages:
             return
 
-        def choose(fmt):
-            dialog.dismiss()
-            self._run_export(document, pages, fmt)
-
-        preferred = app.prefs.get("export_format")
-        content = MDBoxLayout(orientation="horizontal", spacing="12dp",
-                               size_hint_y=None, height="48dp")
-        for label, fmt in [("PDF", "pdf"), ("JPG", "jpg"), ("PNG", "png")]:
-            content.add_widget(MDFlatButton(
-                text=label,
-                theme_text_color="Custom",
-                text_color=(0.20, 0.85, 0.35, 1) if fmt == preferred else (0, 0, 0, 0.87),
-                on_release=lambda x, f=fmt: choose(f),
-            ))
-
-        dialog = MDDialog(
-            title=f'Export "{document["name"]}"',
-            type="custom",
-            content_cls=content,
-            buttons=[],
+        from ui.export_options import (
+            show_export_dialog,
         )
-        dialog.open()
 
-    def _run_export(self, document, pages, fmt):
+        show_export_dialog(
+            title=f'Export "{document["name"]}"',
+            preferred_format=(
+                app.prefs.get(
+                    "export_format"
+                )
+            ),
+            callback=lambda fmt, options:
+                self._run_export(
+                    document,
+                    pages,
+                    fmt,
+                    options,
+                ),
+        )
+
+    def _run_export(
+        self,
+        document,
+        pages,
+        fmt,
+        options,
+    ):
         import threading
-        threading.Thread(target=self._do_export, args=(document, pages, fmt), daemon=True).start()
 
-    def _do_export(self, document, pages, fmt):
-        from pdf.export import export_to_pdf, export_to_image, export_to_images_zip
+        threading.Thread(
+            target=self._do_export,
+            args=(
+                document,
+                pages,
+                fmt,
+                options,
+            ),
+            daemon=True,
+        ).start()
+
+    def _do_export(
+        self,
+        document,
+        pages,
+        fmt,
+        options,
+    ):
+        from pdf.export import (
+            export_to_pdf,
+            export_to_image,
+            export_to_images_zip,
+        )
 
         app = MDApp.get_running_app()
-        safe_name = "".join(c for c in document["name"] if c.isalnum() or c in " _-").strip() or "document"
+
+        safe_name = "".join(
+            c
+            for c in document["name"]
+            if c.isalnum()
+            or c in " _-"
+        ).strip() or "document"
+
+        quality = options.get(
+            "quality",
+            "balanced",
+        )
+
         try:
             if fmt == "pdf":
-                output_path = app.storage.get_export_path(f"{safe_name}.pdf")
-                export_to_pdf(pages, output_path)
+                output_path = (
+                    app.storage.get_export_path(
+                        f"{safe_name}.pdf"
+                    )
+                )
+
+                export_to_pdf(
+                    pages,
+                    output_path,
+                    page_size=options.get(
+                        "page_size",
+                        "a4",
+                    ),
+                    orientation=options.get(
+                        "orientation",
+                        "auto",
+                    ),
+                    margin_pt=float(
+                        options.get(
+                            "margin_pt",
+                            24.0,
+                        )
+                    ),
+                    quality=quality,
+                )
+
             elif len(pages) == 1:
-                output_path = app.storage.get_export_path(f"{safe_name}.{fmt}")
-                export_to_image(pages, output_path, fmt=fmt)
+                output_path = (
+                    app.storage.get_export_path(
+                        f"{safe_name}.{fmt}"
+                    )
+                )
+
+                export_to_image(
+                    pages,
+                    output_path,
+                    fmt=fmt,
+                    quality=quality,
+                )
+
             else:
-                output_path = app.storage.get_export_path(f"{safe_name}_{fmt}.zip")
-                export_to_images_zip(pages, output_path, fmt=fmt)
-            result = (True, output_path)
-        except Exception as e:
-            result = (False, str(e))
+                output_path = (
+                    app.storage.get_export_path(
+                        f"{safe_name}_{fmt}.zip"
+                    )
+                )
+
+                export_to_images_zip(
+                    pages,
+                    output_path,
+                    fmt=fmt,
+                    quality=quality,
+                )
+
+            result = (
+                True,
+                output_path,
+            )
+
+        except Exception as exc:
+            result = (
+                False,
+                str(exc),
+            )
 
         from kivy.clock import Clock
-        Clock.schedule_once(lambda dt: self._on_export_done(*result), 0)
+
+        Clock.schedule_once(
+            lambda dt:
+                self._on_export_done(
+                    *result
+                ),
+            0,
+        )
 
     def _on_export_done(self, success, path_or_error):
         from kivy.utils import platform
         if success:
+            # Only successful export creates a notification. Opening/editing
+            # an existing document, Done, rotate, crop, filter, rename, etc.
+            # never call the notification layer.
+            from storage.notifications import notify_export_saved
+            notify_export_saved(path_or_error)
+
             buttons = [MDFlatButton(text="OK", on_release=lambda *a: dialog.dismiss())]
             if platform == "android":
                 buttons.insert(0, MDFlatButton(

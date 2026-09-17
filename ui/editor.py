@@ -39,6 +39,7 @@ from kivymd.uix.dialog import MDDialog
 from kivymd.app import MDApp
 
 from image_processing.filters import rotate_image_file
+from storage.notifications import notify_new_document_saved
 
 THUMB_SIZE = dp(140)
 
@@ -285,6 +286,11 @@ class EditorScreen(MDScreen):
         app = MDApp.get_running_app()
         pages = list(app.active_session_pages)
 
+        # Only a brand-new explicit SAVE DOCUMENT action should create a
+        # document-saved notification. Re-saving an existing document after
+        # edit/update intentionally does NOT notify.
+        is_new_document = app.editing_document_id is None
+
         if app.editing_document_id is not None:
             app.db.update_pages(app.editing_document_id, pages)
             app.db.rename_document(app.editing_document_id, name)
@@ -296,6 +302,9 @@ class EditorScreen(MDScreen):
                 thumbnail_path=pages[0],
                 pages=pages,
             )
+
+        if is_new_document:
+            notify_new_document_saved(name)
 
         app.active_session_pages = []
         app.editing_document_id = None

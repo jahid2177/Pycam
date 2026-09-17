@@ -28,6 +28,7 @@ from kivymd.uix.button import MDFlatButton
 from kivymd.uix.screen import MDScreen
 
 from image_processing.perspective import correct_document_file
+from image_processing.id_card import combine_id_card_front_back
 from scanner.auto_capture import AutoCaptureController
 from storage.file_picker import FilePicker, copy_to_app_temp, render_pdf_to_images
 from scanner.camera import (
@@ -57,6 +58,7 @@ class ScannerScreen(MDScreen):
     flash_on = BooleanProperty(False)
     enhance_on = BooleanProperty(True)
     hd_mode = BooleanProperty(True)
+    scan_feedback = StringProperty("Find document")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -64,10 +66,10 @@ class ScannerScreen(MDScreen):
         self.camera_widget = None
         self._file_picker = FilePicker()
         self._auto_capture = AutoCaptureController(
-            stability_duration=1.35,
+            stability_duration=1.05,
             corner_movement_ratio=0.014,
             centroid_movement_ratio=0.010,
-            max_area_change_ratio=0.065,
+            max_area_change_ratio=0.060,
             minimum_stable_updates=5,
         )
 
@@ -80,6 +82,7 @@ class ScannerScreen(MDScreen):
         self._update_page_count()
         self._auto_capture.reset()
         self.ring_progress = 0.0
+        self.scan_feedback = "Find document"
 
         app = MDApp.get_running_app()
         if not app.active_session_pages:
@@ -114,6 +117,7 @@ class ScannerScreen(MDScreen):
         self.flash_on = False
         self._auto_capture.reset()
         self.ring_progress = 0.0
+        self.scan_feedback = "Find document"
 
     # ------------------------------------------------------------------
     # Permission
@@ -212,30 +216,76 @@ class ScannerScreen(MDScreen):
         if self.capture_busy:
             return
 
-        self.document_detected = quad is not None
-        self._update_hint()
+        self.document_detected = (
+            quad is not None
+        )
+
+        quality = None
+        if self.camera_widget is not None:
+            quality = getattr(
+                self.camera_widget,
+                "last_quality",
+                None,
+            )
 
         if not self.auto_capture_enabled:
             self._auto_capture.reset()
             self.ring_progress = 0.0
+
+            if (
+                quality is not None
+                and quad is not None
+            ):
+                self.scan_feedback = (
+                    quality.reason
+                    if not quality.acceptable
+                    else (
+                        "Document detected - "
+                        "tap capture"
+                    )
+                )
+            else:
+                self.scan_feedback = (
+                    "Find document"
+                )
+
+            self._update_hint()
             return
 
         if quad is None:
             self._auto_capture.reset()
             self.ring_progress = 0.0
+            self.scan_feedback = (
+                "Find document"
+            )
+            self._update_hint()
             return
 
         frame_w, frame_h = frame_size
-        diagonal = (frame_w ** 2 + frame_h ** 2) ** 0.5
+        diagonal = (
+            frame_w ** 2
+            + frame_h ** 2
+        ) ** 0.5
 
         status = self._auto_capture.update(
             quad,
             diagonal,
             now=time.monotonic(),
+            quality=quality,
         )
-        self.ring_progress = status.progress
 
-        if status.should_capture and not self.capture_busy:
+        self.ring_progress = (
+            status.progress
+        )
+        self.scan_feedback = (
+            self._auto_capture.feedback
+        )
+        self._update_hint()
+
+        if (
+            status.should_capture
+            and not self.capture_busy
+        ):
             self.capture()
 
     def _update_hint(self):
@@ -243,30 +293,57 @@ class ScannerScreen(MDScreen):
             return
 
         if self.capture_busy:
-            self.hint_label.text = "Processing..."
+            self.hint_label.text = (
+                "Processing..."
+            )
             return
 
         if self.scan_type == "id_card":
-            count = len(MDApp.get_running_app().active_session_pages)
-            if count == 0:
-                base = "Place the FRONT of the ID card"
-            elif count == 1:
-                base = "Place the BACK of the ID card"
-            else:
-                base = "ID card captured"
-        else:
-            base = "Point the camera at a document"
+            count = len(
+                MDApp.get_running_app()
+                .active_session_pages
+            )
 
-        if self.document_detected:
-            if self.auto_capture_enabled:
-                if self.ring_progress > 0.05:
-                    self.hint_label.text = "Hold still..."
-                else:
-                    self.hint_label.text = "Document detected"
+            if count == 0:
+                base = (
+                    "Place the FRONT "
+                    "of the ID card"
+                )
+            elif count == 1:
+                base = (
+                    "Place the BACK "
+                    "of the ID card"
+                )
             else:
-                self.hint_label.text = "Document detected - tap capture"
+                base = (
+                    "ID card captured"
+                )
         else:
+            base = (
+                "Point at document "
+                "& hold steady"
+            )
+
+        if not self.document_detected:
             self.hint_label.text = base
+            return
+
+        feedback = (
+            self.scan_feedback
+            or "Hold steady"
+        )
+
+        # In ID-card mode preserve front/back instruction until a quality
+        # problem or Ready/Hold-steady state actually matters.
+        if (
+            self.scan_type == "id_card"
+            and feedback
+            == "Find document"
+        ):
+            self.hint_label.text = base
+            return
+
+        self.hint_label.text = feedback
 
     # ------------------------------------------------------------------
     # Capture
@@ -383,14 +460,29 @@ class ScannerScreen(MDScreen):
         self._update_page_count()
         self._update_hint()
 
-        # ID card workflow: keep camera open for front/back, then open
-        # the editor after side 2.
+        # ID / NID workflow:
+        # 1) first side stays in the camera session;
+        # 2) after the back side is captured, combine both corrected card
+        #    images onto one A4 page without stretching either card;
+        # 3) replace the two temporary session pages with the combined page;
+        # 4) open the normal Editor, so existing save/export code works
+        #    unchanged.
         if self.scan_type == "id_card":
             if len(app.active_session_pages) >= 2:
-                Clock.schedule_once(
-                    lambda dt: app.go_to("editor"),
-                    0.15,
-                )
+                self.capture_busy = True
+                if self.shutter_button:
+                    self.shutter_button.disabled = True
+                if self.hint_label:
+                    self.hint_label.text = "Combining front & back..."
+
+                front_path = app.active_session_pages[0]
+                back_path = app.active_session_pages[1]
+
+                threading.Thread(
+                    target=self._combine_id_card_worker,
+                    args=(front_path, back_path),
+                    daemon=True,
+                ).start()
             return
 
         # Batch mode keeps the camera open. Single mode preserves the
@@ -399,6 +491,85 @@ class ScannerScreen(MDScreen):
             return
 
         app.go_to("preview")
+
+    def _combine_id_card_worker(
+        self,
+        front_path: str,
+        back_path: str,
+    ):
+        """Build one A4 page from front/back off the Kivy UI thread."""
+        app = MDApp.get_running_app()
+        output_path = app.storage.get_temp_path(
+            f"id_card_combined_{int(time.time() * 1000)}.jpg"
+        )
+
+        try:
+            combine_id_card_front_back(
+                front_path,
+                back_path,
+                output_path,
+            )
+        except Exception as exc:
+            Clock.schedule_once(
+                lambda dt, message=str(exc):
+                    self._on_id_card_combine_failed(message),
+                0,
+            )
+            return
+
+        Clock.schedule_once(
+            lambda dt, path=output_path:
+                self._on_id_card_combined(path),
+            0,
+        )
+
+    def _on_id_card_combined(
+        self,
+        combined_path: str,
+    ):
+        app = MDApp.get_running_app()
+
+        app.active_session_pages = [
+            combined_path
+        ]
+        app.latest_capture_path = combined_path
+        app.latest_raw_path = None
+
+        self.capture_busy = False
+        self.document_detected = False
+        self.ring_progress = 0.0
+        self.scan_feedback = "Find document"
+
+        if self.shutter_button:
+            self.shutter_button.disabled = False
+
+        self._update_page_count()
+
+        self.scan_type = "scan"
+        self.capture_mode = "single"
+
+        app.go_to("editor")
+
+    def _on_id_card_combine_failed(
+        self,
+        message: str,
+    ):
+        """Fail safely and keep front/back as separate pages."""
+        app = MDApp.get_running_app()
+
+        self.capture_busy = False
+        if self.shutter_button:
+            self.shutter_button.disabled = False
+
+        self._show_info(
+            "ID card combine failed",
+            (
+                f"{message}\n\n"
+                "The front and back images were kept as separate pages."
+            ),
+        )
+
+        app.go_to("editor")
 
     # ------------------------------------------------------------------
     # Capture mode controls
