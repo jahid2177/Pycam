@@ -13,6 +13,7 @@ Built entirely in Python (like ui/editor.py and ui/crop.py) since the
 row list and bulk-action bar are both dynamic.
 """
 
+from kivy.clock import Clock
 from kivy.metrics import dp
 from kivy.properties import StringProperty
 from kivy.uix.boxlayout import BoxLayout
@@ -28,7 +29,13 @@ from kivymd.uix.menu import MDDropdownMenu
 from kivymd.uix.dialog import MDDialog
 from kivymd.app import MDApp
 
-from ui.home import DOCUMENT_TYPE_ICONS, _format_relative_time
+from ui.home import (
+    DOCUMENT_TYPE_ICONS,
+    _format_relative_time,
+    dismiss_open_menu,
+    keep_menu_on_screen,
+    register_open_menu,
+)
 from ui.navigation import BottomNavigationBar
 
 SORT_OPTIONS = {
@@ -117,7 +124,13 @@ class DocumentRow(BoxLayout):
             original = item["on_release"]
             item["on_release"] = (lambda o=original, m=menu: (m.dismiss(), o()))
         menu.items = items
+        register_open_menu(menu)
         menu.open()
+        # The button sits on the right edge of the row, so open() can anchor the
+        # card past the screen - clamp it back in, and re-check after the card
+        # has been laid out for this frame.
+        keep_menu_on_screen(menu)
+        Clock.schedule_once(lambda dt: keep_menu_on_screen(menu), 0)
 
     def on_touch_up(self, touch):
         if super().on_touch_up(touch):
@@ -155,16 +168,21 @@ class DocumentsScreen(MDScreen):
         self.search_field.opacity = 1
         root.add_widget(self.search_field)
 
+        # Empty state, sized explicitly and collapsed to zero height whenever
+        # the library has documents. With its previous default size_hint_y=1
+        # this label silently claimed half of the screen, squeezing the list
+        # into the top half so a single row looked vertically centred.
+        self.empty_label = MDLabel(
+            text="No documents saved yet", halign="center",
+            theme_text_color="Hint", opacity=0,
+            size_hint_y=None, height=0,
+        )
+        root.add_widget(self.empty_label)
+
         scroll = ScrollView()
         self.list_box = MDBoxLayout(orientation="vertical", adaptive_height=True)
         scroll.add_widget(self.list_box)
         root.add_widget(scroll)
-
-        self.empty_label = MDLabel(
-            text="No documents saved yet", halign="center",
-            theme_text_color="Hint", opacity=0,
-        )
-        root.add_widget(self.empty_label)
 
         self.bulk_bar = MDBoxLayout(
             orientation="horizontal", size_hint_y=None, height=0, opacity=0,
@@ -202,6 +220,7 @@ class DocumentsScreen(MDScreen):
             self.list_box.add_widget(DocumentRow(document, controller=self))
 
         self.empty_label.opacity = 1 if not documents else 0
+        self.empty_label.height = dp(160) if not documents else 0
         self._update_bulk_bar()
 
     # ---- Search -----------------------------------------------------
@@ -234,7 +253,12 @@ class DocumentsScreen(MDScreen):
             original = item["on_release"]
             item["on_release"] = (lambda o=original, m=menu: (m.dismiss(), o()))
         menu.items = items
+        register_open_menu(menu)
         menu.open()
+        # The sort action lives at the right end of the toolbar, so the same
+        # right-edge overflow applies here.
+        keep_menu_on_screen(menu)
+        Clock.schedule_once(lambda dt: keep_menu_on_screen(menu), 0)
 
     def _set_sort(self, key):
         self._sort_key = key
@@ -295,6 +319,7 @@ class DocumentsScreen(MDScreen):
     # ---- Per-document actions (DocumentRow's overflow menu) -----------------------------------------------------
 
     def prompt_rename(self, document):
+        dismiss_open_menu()
         app = MDApp.get_running_app()
         field = MDTextField(text=document["name"], hint_text="Document name")
 
@@ -315,6 +340,7 @@ class DocumentsScreen(MDScreen):
         dialog.open()
 
     def confirm_delete(self, document):
+        dismiss_open_menu()
         app = MDApp.get_running_app()
 
         def do_delete(*a):
@@ -333,6 +359,7 @@ class DocumentsScreen(MDScreen):
         dialog.open()
 
     def export_document(self, document):
+        dismiss_open_menu()
         app = MDApp.get_running_app()
         pages = app.db.get_pages(
             document["id"]
@@ -528,6 +555,7 @@ class DocumentsScreen(MDScreen):
     # ---- Open / navigation -----------------------------------------------------
 
     def run_ocr(self, document):
+        dismiss_open_menu()
         app = MDApp.get_running_app()
         pages = app.db.get_pages(document["id"])
         if not pages:
@@ -612,6 +640,7 @@ class DocumentsScreen(MDScreen):
         dialog.open()
 
     def open_document(self, document):
+        dismiss_open_menu()
         app = MDApp.get_running_app()
         if app.active_session_pages:
             def do_open(*a):
