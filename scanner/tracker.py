@@ -18,12 +18,25 @@ Public API:
     top-left, top-right, bottom-right, bottom-left
 """
 
+import logging
+import math
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
 from scanner.detector import order_points
+
+__all__ = [
+    "DocumentTracker",
+    "TrackingMetrics",
+    "SEARCHING",
+    "DOCUMENT_FOUND",
+    "TRACKING",
+    "STABILIZING",
+]
+
+logger = logging.getLogger(__name__)
 
 
 SEARCHING = "SEARCHING"
@@ -306,6 +319,44 @@ class DocumentTracker:
         frame_size: Tuple[int, int],
         timestamp: float,
     ) -> Optional[np.ndarray]:
+        """
+        Feed one frame's detection result into the tracker.
+
+        Never raises: malformed input (bad frame size, non-finite
+        timestamp, NaN corners, etc.) is logged and treated as a lost
+        detection rather than allowed to crash the caller's camera loop.
+        """
+        try:
+            return self._update_impl(detected_quad, frame_size, timestamp)
+        except Exception:
+            logger.exception(
+                "DocumentTracker.update failed on this frame; "
+                "resetting tracker and returning None."
+            )
+            self.reset()
+            return None
+
+    def _update_impl(
+        self,
+        detected_quad: Optional[Sequence[Sequence[float]]],
+        frame_size: Tuple[int, int],
+        timestamp: float,
+    ) -> Optional[np.ndarray]:
+        width, height = frame_size
+        if (
+            not math.isfinite(float(width))
+            or not math.isfinite(float(height))
+            or width <= 0
+            or height <= 0
+        ):
+            raise ValueError(
+                f"frame_size must be two positive, finite numbers, "
+                f"got {frame_size!r}"
+            )
+
+        if not math.isfinite(float(timestamp)):
+            raise ValueError(f"timestamp must be finite, got {timestamp!r}")
+
         observation = _quad(detected_quad)
         frame_diag = self._frame_diagonal(frame_size)
 

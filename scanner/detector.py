@@ -18,10 +18,15 @@ Design goals:
 No Kivy dependency is used here.
 """
 
+import logging
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
+
+__all__ = ["DocumentDetector", "order_points"]
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------
@@ -43,6 +48,17 @@ PAPER_RATIOS = (
     1.29411765,  # US Letter
     1.64705882,  # US Legal
 )
+
+# log() of each target ratio is fixed, so it is computed once here instead
+# of on every scoring call.
+_PAPER_LOG_RATIOS = tuple(float(np.log(r)) for r in PAPER_RATIOS)
+
+# Structuring elements/kernels used every frame. Allocating these is cheap
+# individually, but a live preview calls the owning functions dozens of
+# times per second, so they are built once at import time and reused.
+_MORPH_CLOSE_KERNEL_5 = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+_DILATE_KERNEL_3 = np.ones((3, 3), dtype=np.uint8)
+_CONTRAST_BAND_KERNEL_7 = np.ones((7, 7), dtype=np.uint8)
 
 
 # ---------------------------------------------------------------------
@@ -197,10 +213,11 @@ def _center_score(quad: np.ndarray, w: int, h: int) -> float:
 
 def _paper_ratio_score(quad: np.ndarray) -> float:
     ratio = _estimated_page_ratio(quad)
+    log_ratio = float(np.log(max(ratio, 1e-6)))
 
     # Receipts/cards/books must still work. A common paper ratio can add
     # confidence, but an unusual ratio is never rejected by this score.
-    best_error = min(abs(np.log(ratio / target)) for target in PAPER_RATIOS)
+    best_error = min(abs(log_ratio - target) for target in _PAPER_LOG_RATIOS)
     return float(np.exp(-best_error * 2.4))
 
 
@@ -347,7 +364,7 @@ def _border_support_score(edge_image: np.ndarray, quad: np.ndarray) -> float:
 
     mask = np.zeros((h, w), dtype=np.uint8)
     cv2.polylines(mask, [q.reshape(-1, 1, 2)], True, 255, 1, cv2.LINE_AA)
-    mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1)
+    mask = cv2.dilate(mask, _DILATE_KERNEL_3, iterations=1)
 
     locations = mask > 0
     count = int(np.count_nonzero(locations))
@@ -372,7 +389,7 @@ def _local_contrast_score(gray: np.ndarray, quad: np.ndarray) -> float:
     filled = np.zeros((h, w), dtype=np.uint8)
     cv2.fillConvexPoly(filled, q, 255)
 
-    kernel = np.ones((7, 7), dtype=np.uint8)
+    kernel = _CONTRAST_BAND_KERNEL_7
     inner = cv2.subtract(filled, cv2.erode(filled, kernel, iterations=2))
     outer = cv2.subtract(cv2.dilate(filled, kernel, iterations=2), filled)
 
@@ -443,6 +460,43 @@ class DocumentDetector:
             tileGridSize=(8, 8),
         )
 
+    @staticmethod
+    def _normalize_frame(frame_bgr: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Defensively coerce whatever the camera pipeline hands over into a
+        clean uint8 3-channel BGR array, or return None if that is not
+        possible. Real devices occasionally deliver grayscale buffers,
+        BGRA/RGBA frames, or non-uint8 dtypes (e.g. float32 previews), and
+        this should never be allowed to raise inside the detection loop.
+        """
+        if frame_bgr is None or not isinstance(frame_bgr, np.ndarray):
+            return None
+
+        if frame_bgr.size == 0:
+            return None
+
+        image = frame_bgr
+        if image.ndim == 2:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+        if image.ndim != 3 or image.shape[2] < 3:
+            return None
+
+        h, w = image.shape[:2]
+        if w < 40 or h < 40:
+            return None
+
+        # Ignore alpha if a caller ever passes BGRA/RGBA.
+        image = image[:, :, :3]
+
+        if image.dtype != np.uint8:
+            image = _normalize_u8(image)
+
+        if not image.flags["C_CONTIGUOUS"]:
+            image = np.ascontiguousarray(image)
+
+        return image
+
     def _resize_for_detection(
         self,
         image: np.ndarray,
@@ -502,10 +556,7 @@ class DocumentDetector:
 
         No branch alone needs to solve every lighting/background case.
         """
-        close_kernel = cv2.getStructuringElement(
-            cv2.MORPH_RECT,
-            (5, 5),
-        )
+        close_kernel = _MORPH_CLOSE_KERNEL_5
 
         # 1) Adaptive Canny: sharp visible document borders.
         canny = _adaptive_canny(smooth)
@@ -517,7 +568,7 @@ class DocumentDetector:
         )
         canny = cv2.dilate(
             canny,
-            np.ones((3, 3), dtype=np.uint8),
+            _DILATE_KERNEL_3,
             iterations=1,
         )
         yield "canny", canny
@@ -766,20 +817,25 @@ class DocumentDetector:
         Detect the most likely document and return 4 corners in ORIGINAL
         source-image coordinates ordered TL, TR, BR, BL.
 
-        Returns None when no plausible document exists.
+        Returns None when no plausible document exists, and also None
+        (instead of raising) on any unexpected internal failure so that a
+        single malformed camera frame can never crash a live preview loop.
         """
-        if frame_bgr is None or not isinstance(frame_bgr, np.ndarray):
+        try:
+            return self._detect_impl(frame_bgr)
+        except Exception:
+            logger.exception(
+                "DocumentDetector.detect failed on this frame; "
+                "returning None instead of raising."
+            )
             return None
 
-        if frame_bgr.ndim != 3 or frame_bgr.shape[2] < 3:
+    def _detect_impl(self, frame_bgr: np.ndarray) -> Optional[np.ndarray]:
+        source = self._normalize_frame(frame_bgr)
+        if source is None:
             return None
 
-        original_h, original_w = frame_bgr.shape[:2]
-        if original_w < 40 or original_h < 40:
-            return None
-
-        # Ignore alpha if a caller ever passes BGRA.
-        source = frame_bgr[:, :, :3]
+        original_h, original_w = source.shape[:2]
 
         small, scale = self._resize_for_detection(source)
         h, w = small.shape[:2]
