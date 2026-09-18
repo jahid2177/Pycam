@@ -40,7 +40,7 @@ from kivymd.uix.menu import MDDropdownMenu
 from kivymd.uix.screen import MDScreen
 from kivymd.uix.snackbar import Snackbar
 
-from ui.file_picker import (
+from storage.file_picker import (
     copy_media_image,
     get_or_create_thumbnail,
     list_media_images,
