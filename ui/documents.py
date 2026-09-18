@@ -1,199 +1,38 @@
 """
-Home screen - the app's landing screen.
+Documents screen - the "Files" tab: the full document library.
 
-Responsibilities:
-- Show a live count + list of recently updated documents from the DB
-- Provide navigation into Scanner, Documents, and Settings
-- Provide a lightweight search-as-you-type over document name/OCR text
+Unlike HomeScreen (which shows only the most recent documents on the
+dashboard), this screen lists *every* saved document, with the same
+search-as-you-type and per-row actions (rename / export / OCR / delete).
 
-This screen does NOT touch the camera or OpenCV directly; scanning is
-owned entirely by ScannerScreen (kept per spec section 4's module
-boundaries).
+The row widget (DocumentListItem) and the small helpers around it
+(menu bookkeeping, relative-time formatting, the type-icon map) are owned by
+ui.home and imported here rather than duplicated, so both screens stay in
+sync automatically.
 """
 
-from datetime import datetime
-
-from kivy.core.window import Window
-from kivy.metrics import dp
-from kivy.properties import StringProperty, ObjectProperty
-from kivy.uix.boxlayout import BoxLayout
+from kivy.properties import ObjectProperty
 from kivymd.uix.screen import MDScreen
-from kivymd.uix.menu import MDDropdownMenu
 from kivymd.uix.dialog import MDDialog
 from kivymd.uix.textfield import MDTextField
 from kivymd.app import MDApp
 
 from ui.navigation import BottomNavigationBar
+from ui.home import (
+    DocumentListItem,
+    dismiss_open_menu,
+)
 
 
-DOCUMENT_TYPE_ICONS = {
-    "document": "file-document-outline",
-    "id_card": "card-account-details-outline",
-    "receipt": "receipt",
-    "certificate": "certificate-outline",
-    "business_card": "card-account-mail-outline",
-    "passport": "passport",
-}
-
-
-# --- Dropdown menu plumbing -------------------------------------------
-# KivyMD's MDDropdownMenu anchors itself to the caller widget, so an overflow
-# button sitting on the right edge of a row pushed the card past the screen
-# edge. The most recently opened menu is tracked here so it can be clamped back
-# inside the window, and so it can be closed before a dialog is shown - an open
-# menu used to stay visible underneath the dialog's dim layer.
-_open_menu = None
-
-
-def register_open_menu(menu):
-    global _open_menu
-    _open_menu = menu
-
-
-def dismiss_open_menu():
-    """Close the tracked dropdown, if any, before showing a modal dialog."""
-    global _open_menu
-    menu, _open_menu = _open_menu, None
-    if menu is not None:
-        try:
-            menu.dismiss()
-        except Exception:
-            pass
-
-
-def keep_menu_on_screen(menu, margin=dp(8)):
-    """Clamp an opened MDDropdownMenu card back inside the screen bounds."""
-    card = getattr(menu, "menu", None)
-    if card is None:
-        return
-    limit = Window.width - margin
-    if card.x + card.width > limit:
-        card.x = max(margin, limit - card.width)
-    if card.x < margin:
-        card.x = margin
-
-
-def _format_relative_time(iso_timestamp: str) -> str:
-    try:
-        then = datetime.fromisoformat(iso_timestamp)
-    except (TypeError, ValueError):
-        return ""
-    delta = datetime.utcnow() - then
-    seconds = delta.total_seconds()
-    if seconds < 60:
-        return "Just now"
-    if seconds < 3600:
-        return f"{int(seconds // 60)} min ago"
-    if seconds < 86400:
-        return f"{int(seconds // 3600)} hr ago"
-    if seconds < 172800:
-        return "Yesterday"
-    return then.strftime("%d %b %Y")
-
-
-class DocumentListItem(BoxLayout):
-    """One row in a document list (used by both Home's recent list and
-    Documents' full library). Kept as a plain BoxLayout (not MDList's
-    built-in item) so we can show a type icon, two-line metadata, and a
-    per-item overflow menu.
-
-    `controller` is any object exposing prompt_rename/export_document/
-    run_ocr/confirm_delete/open_document for this row's document dict -
-    Home and Documents both implement that same small interface rather
-    than this widget needing to know which screen it's on."""
-
-    doc_id = ObjectProperty(None)
-    doc_name = StringProperty("")
-    doc_meta = StringProperty("")
-    type_icon = StringProperty("file-document-outline")
-
-    def __init__(self, document: dict, controller, **kwargs):
-        super().__init__(**kwargs)
-        self.document = document
-        self.controller = controller
-        self.doc_id = document["id"]
-        self.doc_name = document["name"]
-        self.type_icon = DOCUMENT_TYPE_ICONS.get(
-            document.get("document_type", "document"), "file-document-outline"
-        )
-        page_count = document.get("page_count", 0)
-        page_label = "1 page" if page_count == 1 else f"{page_count} pages"
-        when = _format_relative_time(document.get("updated_at", ""))
-        self.doc_meta = f"{page_label} • {when}" if when else page_label
-        self._menu = None
-
-    def open_menu(self, caller):
-        items = [
-            {"text": "Rename", "on_release": self._rename},
-            {"text": "Export", "on_release": self._export},
-            {"text": "Run OCR", "on_release": self._run_ocr},
-            {"text": "Delete", "on_release": self._delete},
-        ]
-        menu = MDDropdownMenu(caller=caller, items=items, width_mult=3)
-        self._menu = menu
-        register_open_menu(menu)
-        menu.open()
-        # open() anchors the card to the caller; pull it back on-screen and
-        # re-check once the card has been laid out for this frame.
-        keep_menu_on_screen(menu)
-        from kivy.clock import Clock
-
-        Clock.schedule_once(lambda dt: keep_menu_on_screen(menu), 0)
-
-    def _dismiss_menu(self):
-        if self._menu:
-            self._menu.dismiss()
-            self._menu = None
-
-    def _rename(self, *args):
-        self._dismiss_menu()
-        self.controller.prompt_rename(self.document)
-
-    def _export(self, *args):
-        self._dismiss_menu()
-        self.controller.export_document(self.document)
-
-    def _run_ocr(self, *args):
-        self._dismiss_menu()
-        self.controller.run_ocr(self.document)
-
-    def _delete(self, *args):
-        self._dismiss_menu()
-        self.controller.confirm_delete(self.document)
-
-    def on_release_row(self):
-        self.controller.open_document(self.document)
-
-    def on_touch_up(self, touch):
-        # Let children (the overflow menu button) handle their own tap first
-        result = super().on_touch_up(touch)
-        
-        # Check if the touch is on the 3-dot menu button to stop propagation
-        for child in self.children:
-            if getattr(child, 'icon', '') == 'dots-vertical' and child.collide_point(*touch.pos):
-                return True
-                
-        if result:
-            return True
-            
-        # Treat as row click only if children didn't consume the touch
-        if self.collide_point(*touch.pos):
-            self.on_release_row()
-            return True
-        return False
-
-
-class HomeScreen(MDScreen):
-    recent_list = ObjectProperty(None)
+class DocumentsScreen(MDScreen):
+    doc_list = ObjectProperty(None)
     empty_state = ObjectProperty(None)
     doc_count_label = ObjectProperty(None)
     bottom_nav_container = ObjectProperty(None)
 
-    RECENT_LIMIT = 8
-
     def on_kv_post(self, base_widget):
         if self.bottom_nav_container and not self.bottom_nav_container.children:
-            self.bottom_nav_container.add_widget(BottomNavigationBar(selected="home"))
+            self.bottom_nav_container.add_widget(BottomNavigationBar(selected="documents"))
 
     def on_pre_enter(self, *args):
         self.refresh_documents()
@@ -205,29 +44,20 @@ class HomeScreen(MDScreen):
 
         self.doc_count_label.text = "1 document" if total == 1 else f"{total} documents"
 
-        self.recent_list.clear_widgets()
-        # Collapse the empty state to zero height, not just fade it out: an
-        # invisible-but-present block still reserved ~240dp at the top of the
-        # list, which pushed the first row down so it looked vertically centred
-        # instead of top-aligned under the search bar.
+        self.doc_list.clear_widgets()
         self.empty_state.opacity = 1 if not documents else 0
-        self.empty_state.height = dp(240) if not documents else 0
         self.empty_state.disabled = bool(documents)
+        from kivy.metrics import dp
+        self.empty_state.height = dp(240) if not documents else 0
 
-        for document in documents[: self.RECENT_LIMIT]:
+        for document in documents:
             item = DocumentListItem(document=document, controller=self)
-            self.recent_list.add_widget(item)
+            self.doc_list.add_widget(item)
 
     # ---- Navigation --------------------------------------------------
 
-    def start_scan(self):
-        app = MDApp.get_running_app()
-        app.active_session_pages = []
-        app.editing_document_id = None  # a brand-new scan, not continuing a saved one
-        app.go_to("scanner")
-
-    def go_documents(self):
-        MDApp.get_running_app().go_to("documents")
+    def go_home(self):
+        MDApp.get_running_app().go_to("home")
 
     def go_settings(self):
         MDApp.get_running_app().go_to("settings")
@@ -239,9 +69,6 @@ class HomeScreen(MDScreen):
         dismiss_open_menu()
         app = MDApp.get_running_app()
         if app.active_session_pages:
-            # Opening a saved document replaces the in-progress session
-            # in app.active_session_pages - warn rather than silently
-            # discard whatever the user hasn't saved yet.
             from kivymd.uix.button import MDFlatButton
 
             def do_open(*a):
@@ -269,22 +96,6 @@ class HomeScreen(MDScreen):
         app.latest_capture_path = pages[-1] if pages else None
         app.latest_raw_path = None
         app.go_to("editor")
-
-    # ---- Search --------------------------------------------------------
-
-    def open_search(self):
-        self._search_field = MDTextField(hint_text="Search documents")
-        self._search_dialog = MDDialog(
-            title="Search",
-            type="custom",
-            content_cls=self._search_field,
-            buttons=[],
-        )
-        self._search_field.bind(text=self._on_search_text)
-        self._search_dialog.open()
-
-    def _on_search_text(self, instance, value):
-        self.refresh_documents(search_query=value.strip() or None)
 
     # ---- Item actions --------------------------------------------------
 
@@ -334,59 +145,28 @@ class HomeScreen(MDScreen):
     def export_document(self, document: dict):
         dismiss_open_menu()
         app = MDApp.get_running_app()
-        pages = app.db.get_pages(
-            document["id"]
-        )
+        pages = app.db.get_pages(document["id"])
         if not pages:
             return
 
-        from ui.export_options import (
-            show_export_dialog,
-        )
+        from ui.export_options import show_export_dialog
 
         show_export_dialog(
             title=f'Export "{document["name"]}"',
-            preferred_format=(
-                app.prefs.get(
-                    "export_format"
-                )
-            ),
-            callback=lambda fmt, options:
-                self._run_export(
-                    document,
-                    pages,
-                    fmt,
-                    options,
-                ),
+            preferred_format=app.prefs.get("export_format"),
+            callback=lambda fmt, options: self._run_export(document, pages, fmt, options),
         )
 
-    def _run_export(
-        self,
-        document,
-        pages,
-        fmt,
-        options,
-    ):
+    def _run_export(self, document, pages, fmt, options):
         import threading
 
         threading.Thread(
             target=self._do_export,
-            args=(
-                document,
-                pages,
-                fmt,
-                options,
-            ),
+            args=(document, pages, fmt, options),
             daemon=True,
         ).start()
 
-    def _do_export(
-        self,
-        document,
-        pages,
-        fmt,
-        options,
-    ):
+    def _do_export(self, document, pages, fmt, options):
         from pdf.export import (
             export_to_pdf,
             export_to_image,
@@ -396,93 +176,37 @@ class HomeScreen(MDScreen):
         app = MDApp.get_running_app()
 
         safe_name = "".join(
-            c
-            for c in document["name"]
-            if c.isalnum()
-            or c in " _-"
+            c for c in document["name"] if c.isalnum() or c in " _-"
         ).strip() or "document"
 
-        quality = options.get(
-            "quality",
-            "balanced",
-        )
+        quality = options.get("quality", "balanced")
 
         try:
             if fmt == "pdf":
-                output_path = (
-                    app.storage.get_export_path(
-                        f"{safe_name}.pdf"
-                    )
-                )
-
+                output_path = app.storage.get_export_path(f"{safe_name}.pdf")
                 export_to_pdf(
                     pages,
                     output_path,
-                    page_size=options.get(
-                        "page_size",
-                        "a4",
-                    ),
-                    orientation=options.get(
-                        "orientation",
-                        "auto",
-                    ),
-                    margin_pt=float(
-                        options.get(
-                            "margin_pt",
-                            24.0,
-                        )
-                    ),
+                    page_size=options.get("page_size", "a4"),
+                    orientation=options.get("orientation", "auto"),
+                    margin_pt=float(options.get("margin_pt", 24.0)),
                     quality=quality,
                 )
-
             elif len(pages) == 1:
-                output_path = (
-                    app.storage.get_export_path(
-                        f"{safe_name}.{fmt}"
-                    )
-                )
-
-                export_to_image(
-                    pages,
-                    output_path,
-                    fmt=fmt,
-                    quality=quality,
-                )
-
+                output_path = app.storage.get_export_path(f"{safe_name}.{fmt}")
+                export_to_image(pages, output_path, fmt=fmt, quality=quality)
             else:
-                output_path = (
-                    app.storage.get_export_path(
-                        f"{safe_name}_{fmt}.zip"
-                    )
-                )
+                output_path = app.storage.get_export_path(f"{safe_name}_{fmt}.zip")
+                export_to_images_zip(pages, output_path, fmt=fmt, quality=quality)
 
-                export_to_images_zip(
-                    pages,
-                    output_path,
-                    fmt=fmt,
-                    quality=quality,
-                )
-
-            result = (
-                True,
-                output_path,
-            )
+            result = (True, output_path)
 
         except Exception as exc:
-            result = (
-                False,
-                str(exc),
-            )
+            result = (False, str(exc))
 
         from kivy.clock import Clock
 
-        Clock.schedule_once(
-            lambda dt:
-                self._on_export_done(
-                    *result
-                ),
-            0,
-        )
+        Clock.schedule_once(lambda dt: self._on_export_done(*result), 0)
 
     def run_ocr(self, document: dict):
         dismiss_open_menu()
@@ -577,8 +301,6 @@ class HomeScreen(MDScreen):
         from kivy.utils import platform
         from kivymd.uix.button import MDFlatButton
         if success:
-            # Export is a genuine new output file, so it may notify. This is
-            # deliberately NOT called from edit/done/crop/filter actions.
             from storage.notifications import notify_export_saved
             notify_export_saved(path_or_error)
 

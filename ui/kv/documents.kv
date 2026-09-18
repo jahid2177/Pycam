@@ -1,0 +1,102 @@
+#:import dp kivy.metrics.dp
+
+<DocumentsScreen>:
+    doc_list: doc_list
+    empty_state: empty_state
+    doc_count_label: doc_count_label
+    bottom_nav_container: bottom_nav_container
+
+    MDFloatLayout:
+        md_bg_color: 0.97, 0.98, 1, 1
+
+        MDBoxLayout:
+            orientation: "vertical"
+            size_hint: 1, 1
+            pos_hint: {"x": 0, "y": 0}
+
+            MDBoxLayout:
+                orientation: "vertical"
+                size_hint_y: None
+                height: dp(100)
+                padding: dp(18), dp(12), dp(18), dp(6)
+                md_bg_color: 0.97, 0.98, 1, 1
+
+                MDTextField:
+                    id: search_field
+                    hint_text: "Search documents"
+                    mode: "rectangle"
+                    icon_right: "magnify"
+                    size_hint_y: None
+                    height: dp(56)
+                    on_text: root.refresh_documents(self.text.strip() or None)
+
+            MDBoxLayout:
+                orientation: "vertical"
+                padding: dp(18), 0, dp(18), dp(4)
+                size_hint_y: None
+                height: dp(34)
+
+                MDLabel:
+                    id: doc_count_label
+                    text: "0 documents"
+                    theme_text_color: "Secondary"
+                    font_style: "Caption"
+
+            ScrollView:
+                do_scroll_x: False
+
+                MDBoxLayout:
+                    orientation: "vertical"
+                    adaptive_height: True
+                    padding: dp(10), dp(4)
+                    spacing: dp(4)
+
+                    MDBoxLayout:
+                        id: empty_state
+                        orientation: "vertical"
+                        size_hint_y: None
+                        height: dp(240)
+                        padding: dp(8), dp(48), dp(8), 0
+                        spacing: dp(10)
+
+                        AnchorLayout:
+                            anchor_x: "center"
+                            anchor_y: "center"
+                            size_hint_y: None
+                            height: dp(76)
+
+                            MDIcon:
+                                icon: "folder-outline"
+                                theme_text_color: "Hint"
+                                font_size: "58sp"
+                                size_hint: None, None
+                                size: dp(72), dp(72)
+                                text_size: self.size
+                                halign: "center"
+                                valign: "middle"
+
+                        MDLabel:
+                            text: "No documents yet"
+                            halign: "center"
+                            theme_text_color: "Hint"
+                            font_style: "H6"
+                            size_hint_y: None
+                            height: self.texture_size[1]
+
+                        MDLabel:
+                            text: "Scanned documents will show up here"
+                            halign: "center"
+                            theme_text_color: "Hint"
+                            font_style: "Caption"
+                            size_hint_y: None
+                            height: self.texture_size[1]
+                            text_size: self.width, None
+
+                    MDList:
+                        id: doc_list
+
+            MDBoxLayout:
+                id: bottom_nav_container
+                orientation: "vertical"
+                size_hint_y: None
+                height: dp(82)
