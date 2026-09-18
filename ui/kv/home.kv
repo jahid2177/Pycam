@@ -111,10 +111,10 @@
         MDFloatingActionButton:
             icon: "camera"
             md_bg_color: 0.05, 0.52, 0.46, 1
-            # Centred over the Settings tab (a 25% nav cell is centred at 0.875)
-            # and lifted 16dp above the bar, instead of an arbitrary right offset
-            # that never lined up with the tab or the screen margin.
-            pos_hint: {"center_x": 0.875, "y": (bottom_nav_container.height + dp(16)) / max(root.height, dp(1))}
+            # Keep the scan FAB above the centre of the bottom bar.  It used to
+            # sit over the Settings cell (center_x 0.875) and intercepted taps,
+            # which made Settings look completely unresponsive.
+            pos_hint: {"center_x": 0.5, "y": (bottom_nav_container.height + dp(16)) / max(root.height, dp(1))}
             on_release: root.start_scan()
 
 
