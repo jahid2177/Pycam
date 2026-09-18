@@ -30,6 +30,8 @@ from ui.documents import DocumentsScreen
 from ui.settings import SettingsScreen
 from ui.tools import ToolsScreen
 from ui.tool_workflows import ToolWorkflowScreen
+# নতুন স্ক্রিন ইম্পোর্ট করা হলো
+from ui.photo_picker import PhotoPickerScreen
 
 APP_NAME = "Document Scanner"
 KV_DIR = os.path.join(os.path.dirname(__file__), "ui", "kv")
@@ -63,6 +65,7 @@ class ScannerApp(MDApp):
         self.latest_capture_path = None
         self.latest_raw_path = None  # pre-perspective-correction photo, for the crop editor
         self.crop_source_path = None
+        self.crop_source_index = None # নতুন ইনডেক্স ভেরিয়েবল
         self.selected_document_id = None
         self.editing_document_id = None  # set when re-opening a saved document (step 10)
         self._exit_dialog = None
@@ -88,6 +91,8 @@ class ScannerApp(MDApp):
         self.screen_manager.add_widget(ToolWorkflowScreen(name="passport_photo_tool", mode="passport_photo"))
         self.screen_manager.add_widget(ToolWorkflowScreen(name="photo_translation_tool", mode="photo_translation"))
         self.screen_manager.add_widget(ToolWorkflowScreen(name="scan_code_tool", mode="scan_code"))
+        # photo_picker স্ক্রিনটি যোগ করা হলো
+        self.screen_manager.add_widget(PhotoPickerScreen(name="photo_picker"))
 
         return self.screen_manager
 
