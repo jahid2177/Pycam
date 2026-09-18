@@ -1093,9 +1093,15 @@ class CropScreen(MDScreen):
         )
 
         if app.active_session_pages:
-            app.active_session_pages[
-                -1
-            ] = output_path
+            # ইনডেক্স ফিক্স: crop_source_index থাকলে সেই পেজ আপডেট হবে
+            if getattr(app, "crop_source_index", None) is not None:
+                index = app.crop_source_index
+                if 0 <= index < len(app.active_session_pages):
+                    app.active_session_pages[index] = output_path
+                else:
+                    app.active_session_pages[-1] = output_path
+            else:
+                app.active_session_pages[-1] = output_path
 
         app.latest_capture_path = (
             output_path
