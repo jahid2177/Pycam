@@ -245,6 +245,35 @@ class DocumentCamera(Preview):
         self._analysis_interval = INITIAL_ANALYSIS_INTERVAL
         self._processing_time_ema = 0.0
 
+    def reset_detection_state(self):
+        """Forget the previous page without reconnecting CameraX.
+
+        A multi-page scan keeps the same camera session alive.  Resetting only
+        ScannerScreen's UI state is not enough because DocumentTracker and the
+        smoothed overlay still remember the page that was just captured.  This
+        method clears that temporal history so the next physical page is
+        evaluated as a fresh document immediately.
+        """
+        self._tracker.reset()
+        self.last_quality = FrameQuality()
+        self._frame_counter = 0
+        self._last_analysis_started = 0.0
+
+        with self._lock:
+            self._canvas_quad = None
+            self._smoothed_quad = None
+
+        self._missed_frames = 0
+        self._pending_jump_quad = None
+        self._pending_jump_count = 0
+
+        # Remove the old green outline on the UI thread.  The next analysed
+        # frame will draw a new outline if a document is present.
+        try:
+            Clock.schedule_once(lambda dt: self.canvas.ask_update(), 0)
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # Flash / torch
     # ------------------------------------------------------------------
