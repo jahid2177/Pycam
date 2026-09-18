@@ -62,15 +62,31 @@ def dismiss_open_menu():
 
 
 def keep_menu_on_screen(menu, margin=dp(8)):
-    """Clamp an opened MDDropdownMenu card back inside the screen bounds."""
-    card = getattr(menu, "menu", None)
-    if card is None:
+    """Clamp an opened MDDropdownMenu surface inside the visible Window."""
+    card = getattr(menu, "menu", None) or menu
+
+    try:
+        width = float(card.width)
+        x = float(card.x)
+    except Exception:
         return
+
+    available = max(dp(80), Window.width - (margin * 2))
+    if width > available:
+        try:
+            card.width = available
+            width = available
+        except Exception:
+            pass
+
     limit = Window.width - margin
-    if card.x + card.width > limit:
-        card.x = max(margin, limit - card.width)
-    if card.x < margin:
-        card.x = margin
+    try:
+        if x + width > limit:
+            card.x = max(margin, limit - width)
+        if card.x < margin:
+            card.x = margin
+    except Exception:
+        pass
 
 
 def _format_relative_time(iso_timestamp: str) -> str:
@@ -129,16 +145,29 @@ class DocumentListItem(BoxLayout):
             {"text": "Run OCR", "on_release": self._run_ocr},
             {"text": "Delete", "on_release": self._delete},
         ]
-        menu = MDDropdownMenu(caller=caller, items=items, width_mult=3)
+        # The caller is the right-edge 3-dot button.  Make the menu grow to
+        # the LEFT of that caller and give it an explicit phone-safe width so
+        # it can never render beyond the right edge of the display.
+        safe_width = min(dp(196), max(dp(150), Window.width - dp(24)))
+        menu = MDDropdownMenu(
+            caller=caller,
+            items=items,
+            width=safe_width,
+            position="bottom",
+            border_margin=dp(12),
+            hor_growth="left",
+        )
         self._menu = menu
         register_open_menu(menu)
         menu.open()
-        # open() anchors the card to the caller; pull it back on-screen and
-        # re-check once the card has been laid out for this frame.
-        keep_menu_on_screen(menu)
+
+        # KivyMD finalises dropdown geometry asynchronously.  Clamp more than
+        # once so both the first layout pass and Android's next frame are safe.
+        keep_menu_on_screen(menu, margin=dp(12))
         from kivy.clock import Clock
 
-        Clock.schedule_once(lambda dt: keep_menu_on_screen(menu), 0)
+        Clock.schedule_once(lambda dt: keep_menu_on_screen(menu, margin=dp(12)), 0)
+        Clock.schedule_once(lambda dt: keep_menu_on_screen(menu, margin=dp(12)), 0.05)
 
     def _dismiss_menu(self):
         if self._menu:

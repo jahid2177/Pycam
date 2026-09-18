@@ -103,6 +103,12 @@ class ScannerScreen(MDScreen):
         self._ensure_camera_widget()
 
         if self.camera_widget is not None:
+            # The camera widget is reused between pages/screens.  Clear any
+            # previous page's tracker/smoothing history before analysis starts.
+            try:
+                self.camera_widget.reset_detection_state()
+            except Exception:
+                pass
             Clock.schedule_once(
                 lambda dt: self.camera_widget.start(analyze=True),
                 0.10,
@@ -453,6 +459,17 @@ class ScannerScreen(MDScreen):
         self.capture_busy = False
         self.document_detected = False
         self.ring_progress = 0.0
+        self.scan_feedback = "Find document"
+        self._auto_capture.reset()
+
+        # In Batch mode the CameraX session stays alive.  Explicitly forget
+        # the page that was just captured so the next page gets a brand-new
+        # edge detection/tracking cycle instead of inheriting a stale quad.
+        if self.camera_widget is not None:
+            try:
+                self.camera_widget.reset_detection_state()
+            except Exception:
+                pass
 
         if self.shutter_button:
             self.shutter_button.disabled = False
