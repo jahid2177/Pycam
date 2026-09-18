@@ -189,3 +189,182 @@ def render_pdf_to_images(pdf_path, output_dir):
                 pfd.close()
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# In-app photo gallery picker (custom multi-select grid, not the system
+# Chooser). Backs ui/photo_picker.py.
+#
+# READ_MEDIA_IMAGES (Android 13+) or READ_EXTERNAL_STORAGE (older) must be
+# granted before these are called - ui/photo_picker.py is responsible for
+# that using android.permissions, since this module intentionally stays
+# permission-request-free so it can also be imported/tested on desktop.
+# ---------------------------------------------------------------------------
+
+def _media_content_resolver():
+    from jnius import autoclass
+
+    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+    activity = PythonActivity.mActivity
+    return activity.getContentResolver()
+
+
+def list_media_images(limit=400):
+    """
+    Return recent device photos as a list of dicts:
+        {"id": <MediaStore row id, str>, "date_added": <int, unix seconds>}
+
+    Newest first. Returns [] on desktop or on any query failure - callers
+    should treat an empty result as "show an empty/error state", not crash.
+    """
+    if platform != "android":
+        return []
+
+    try:
+        from jnius import autoclass
+
+        MediaStore = autoclass("android.provider.MediaStore$Images$Media")
+        content_uri = MediaStore.EXTERNAL_CONTENT_URI
+
+        # pyjnius converts a plain Python list into the Java String[]
+        # this query() overload expects - no manual array construction
+        # needed (and autoclass("java.lang.String[]") is not valid).
+        projection = ["_id", "date_added"]
+
+        resolver = _media_content_resolver()
+        cursor = resolver.query(
+            content_uri,
+            projection,
+            None,
+            None,
+            "date_added DESC",
+        )
+
+        if cursor is None:
+            return []
+
+        results = []
+        try:
+            id_index = cursor.getColumnIndexOrThrow("_id")
+            date_index = cursor.getColumnIndexOrThrow("date_added")
+
+            while cursor.moveToNext() and len(results) < limit:
+                results.append(
+                    {
+                        "id": str(cursor.getLong(id_index)),
+                        "date_added": int(cursor.getLong(date_index)),
+                    }
+                )
+        finally:
+            cursor.close()
+
+        return results
+    except Exception:
+        return []
+
+
+def get_or_create_thumbnail(media_id, cache_dir, size_px=300):
+    """
+    Return a private-storage JPEG thumbnail path for one MediaStore image,
+    generating and caching it on first use.
+
+    Uses ContentResolver.loadThumbnail (Android 10+ / API 29+). Older
+    devices fall back to copy_media_image() + local downscale, which is
+    slower but has no extra platform-version branching to maintain.
+    """
+    if platform != "android":
+        return None
+
+    os.makedirs(cache_dir, exist_ok=True)
+    cached_path = os.path.join(cache_dir, f"thumb_{media_id}.jpg")
+    if os.path.exists(cached_path):
+        return cached_path
+
+    try:
+        from jnius import autoclass
+
+        Build = autoclass("android.os.Build$VERSION")
+        content_uri_str = f"content://media/external/images/media/{media_id}"
+        Uri = autoclass("android.net.Uri")
+        uri = Uri.parse(content_uri_str)
+        resolver = _media_content_resolver()
+
+        if int(Build.SDK_INT) >= 29:
+            Size = autoclass("android.util.Size")
+            CancellationSignal = autoclass("android.os.CancellationSignal")
+            bitmap = resolver.loadThumbnail(
+                uri, Size(size_px, size_px), CancellationSignal()
+            )
+        else:
+            BitmapFactory = autoclass("android.graphics.BitmapFactory")
+            stream = resolver.openInputStream(uri)
+            try:
+                bitmap = BitmapFactory.decodeStream(stream)
+            finally:
+                stream.close()
+
+        if bitmap is None:
+            return None
+
+        CompressFormat = autoclass("android.graphics.Bitmap$CompressFormat")
+        FileOutputStream = autoclass("java.io.FileOutputStream")
+
+        out = FileOutputStream(cached_path)
+        try:
+            bitmap.compress(CompressFormat.JPEG, 85, out)
+            out.flush()
+        finally:
+            out.close()
+            try:
+                bitmap.recycle()
+            except Exception:
+                pass
+
+        return cached_path
+    except Exception:
+        return None
+
+
+def copy_media_image(media_id, storage_manager, prefix="gallery"):
+    """
+    Copy one full-resolution MediaStore image into app-private storage.
+
+    Returns the new private path, or None if the copy failed (permission
+    revoked mid-session, item deleted from the gallery, etc.) - callers
+    should skip that item rather than aborting the whole import.
+    """
+    if platform != "android":
+        return None
+
+    try:
+        from jnius import autoclass
+
+        Uri = autoclass("android.net.Uri")
+        uri = Uri.parse(f"content://media/external/images/media/{media_id}")
+        resolver = _media_content_resolver()
+
+        stream = resolver.openInputStream(uri)
+        if stream is None:
+            return None
+
+        destination = storage_manager.get_temp_path(
+            f"{prefix}_{media_id}_{int(time.time() * 1000)}.jpg"
+        )
+
+        FileOutputStream = autoclass("java.io.FileOutputStream")
+        out = FileOutputStream(destination)
+        try:
+            buffer = bytearray(64 * 1024)
+            while True:
+                read = stream.read(buffer)
+                if read == -1:
+                    break
+                out.write(buffer, 0, read)
+            out.flush()
+        finally:
+            out.close()
+            stream.close()
+
+        return destination
+    except Exception:
+        return None
