@@ -31,7 +31,7 @@ from ui.settings import SettingsScreen
 from ui.tools import ToolsScreen
 from ui.tool_workflows import ToolWorkflowScreen
 # নতুন স্ক্রিন ইম্পোর্ট করা হলো
-from ui.photo_picker import PhotoPickerScreen
+from storage.photo_picker import PhotoPickerScreen
 
 APP_NAME = "Document Scanner"
 KV_DIR = os.path.join(os.path.dirname(__file__), "ui", "kv")
