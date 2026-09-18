@@ -1,85 +1,331 @@
 #:import dp kivy.metrics.dp
 
+<FilterChip@ButtonBehavior+MDBoxLayout>:
+    # A single filter option in the bottom scroll row: small thumbnail
+    # swatch + caption, built/bound dynamically from filters.FILTER_LABELS
+    # by PreviewScreen.refresh_filter_row() - see preview.py.
+    selected: False
+    orientation: "vertical"
+    size_hint: None, None
+    size: dp(64), dp(64)
+    spacing: dp(2)
+    radius: [dp(10)]
+    md_bg_color: (0.07, 0.60, 0.50, 0.30) if self.selected else (1, 1, 1, 0.06)
+
+    canvas.before:
+        Color:
+            rgba: (0.12, 0.88, 0.67, 1) if self.selected else (0, 0, 0, 0)
+        Line:
+            rounded_rectangle: (self.x, self.y, self.width, self.height, dp(10))
+            width: dp(1.6)
+
+
 <PreviewScreen>:
+    title_field: title_field
+    add_page_top_btn: add_page_top_btn
+    image_frame: image_frame
     preview_image: preview_image
-    filter_row: filter_row
+    empty_state: empty_state
+    delete_page_btn: delete_page_btn
     processing_label: processing_label
+    prev_page_btn: prev_page_btn
+    next_page_btn: next_page_btn
+    page_counter_label: page_counter_label
+    compare_btn: compare_btn
+    filter_row: filter_row
+    retake_btn: retake_btn
+    rotate_left_btn: rotate_left_btn
+    crop_btn: crop_btn
+    extract_text_btn: extract_text_btn
+    confirm_btn: confirm_btn
 
     MDBoxLayout:
         orientation: "vertical"
-        md_bg_color: 0, 0, 0, 1
+        md_bg_color: 0.04, 0.04, 0.05, 1
 
-        MDTopAppBar:
-            title: "Review Page"
-            elevation: 0
-            md_bg_color: 0, 0, 0, 1
-            specific_text_color: 1, 1, 1, 1
-            left_action_items: [["close", lambda x: root.discard()]]
+        # ---------------------------------------------------------------
+        # Top bar: back, editable title, Add page
+        # ---------------------------------------------------------------
+        MDBoxLayout:
+            orientation: "horizontal"
+            size_hint_y: None
+            height: dp(56)
+            padding: dp(8), dp(4)
+            spacing: dp(4)
 
+            MDIconButton:
+                icon: "arrow-left"
+                theme_text_color: "Custom"
+                text_color: 1, 1, 1, 1
+                on_release: root.discard()
+
+            MDTextField:
+                id: title_field
+                text: root.document_title
+                hint_text: "Document name"
+                mode: "fill"
+                fill_color_normal: 0, 0, 0, 0
+                fill_color_focus: 0, 0, 0, 0
+                line_color_normal: 0.5, 0.5, 0.5, 0.6
+                line_color_focus: 0.12, 0.88, 0.67, 1
+                font_size: "20sp"
+                on_text_validate: root.rename_document(self.text)
+                on_focus: if not self.focus: root.rename_document(self.text)
+
+            MDFlatButton:
+                text: "Add"
+                theme_text_color: "Custom"
+                text_color: 0.12, 0.88, 0.67, 1
+                id: add_page_top_btn
+                on_release: root.add_page()
+
+        # ---------------------------------------------------------------
+        # Main page area - dashed frame, image or empty "Add Page" state
+        # ---------------------------------------------------------------
         FloatLayout:
-            Image:
-                id: preview_image
-                allow_stretch: True
-                keep_ratio: True
+            size_hint_y: 1
+            padding: dp(16)
+
+            MDBoxLayout:
+                id: image_frame
+                size_hint: 1, 1
+                pos_hint: {"center_x": 0.5, "center_y": 0.5}
+
+                canvas.before:
+                    Color:
+                        rgba: 1, 1, 1, 0.32
+                    Line:
+                        rounded_rectangle: (self.x, self.y, self.width, self.height, dp(14))
+                        width: dp(1.4)
+                        dash_length: dp(6)
+                        dash_offset: dp(4)
+
+                Image:
+                    id: preview_image
+                    allow_stretch: True
+                    keep_ratio: True
+
+                MDLabel:
+                    id: processing_label
+                    text: "Applying filter..."
+                    halign: "center"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+                    size_hint: 1, None
+                    height: dp(32)
+                    pos_hint: {"center_x": 0.5, "center_y": 0.5}
+                    opacity: 0
+
+                MDBoxLayout:
+                    id: empty_state
+                    orientation: "vertical"
+                    size_hint: None, None
+                    size: dp(160), dp(96)
+                    pos_hint: {"center_x": 0.5, "center_y": 0.5}
+                    spacing: dp(10)
+                    opacity: 1
+
+                    MDIconButton:
+                        icon: "camera-plus-outline"
+                        theme_text_color: "Custom"
+                        text_color: 0.12, 0.88, 0.67, 1
+                        user_font_size: "40sp"
+                        pos_hint: {"center_x": 0.5}
+                        on_release: root.add_page()
+
+                    MDRaisedButton:
+                        text: "Add Page"
+                        md_bg_color: 0.05, 0.20, 0.17, 1
+                        theme_text_color: "Custom"
+                        text_color: 0.12, 0.88, 0.67, 1
+                        pos_hint: {"center_x": 0.5}
+                        on_release: root.add_page()
+
+                # Delete-current-page button, only shown once a page exists.
+                MDIconButton:
+                    id: delete_page_btn
+                    icon: "trash-can-outline"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+                    pos_hint: {"x": 0.02, "top": 0.98}
+                    size_hint: None, None
+                    size: dp(40), dp(40)
+                    opacity: 0
+                    disabled: True
+                    on_release: root.delete_current_page()
+                    canvas.before:
+                        Color:
+                            rgba: 0, 0, 0, 0.55
+                        Ellipse:
+                            pos: self.pos
+                            size: self.size
+
+        # ---------------------------------------------------------------
+        # Page navigator + Compare toggle
+        # ---------------------------------------------------------------
+        MDBoxLayout:
+            orientation: "horizontal"
+            size_hint_y: None
+            height: dp(40)
+            padding: dp(16), 0
+            spacing: dp(12)
+
+            Widget:
+
+            MDIconButton:
+                id: prev_page_btn
+                icon: "chevron-left"
+                theme_text_color: "Custom"
+                text_color: 1, 1, 1, 1
+                on_release: root.go_to_previous_page()
 
             MDLabel:
-                id: processing_label
-                text: "Applying filter..."
+                id: page_counter_label
+                text: root.page_counter_text
                 halign: "center"
                 theme_text_color: "Custom"
                 text_color: 1, 1, 1, 1
-                size_hint: 1, None
-                height: dp(32)
-                pos_hint: {"center_x": 0.5, "center_y": 0.5}
-                opacity: 0
+                size_hint_x: None
+                width: dp(56)
 
+            MDIconButton:
+                id: next_page_btn
+                icon: "chevron-right"
+                theme_text_color: "Custom"
+                text_color: 1, 1, 1, 1
+                on_release: root.go_to_next_page()
+
+            Widget:
+
+            MDFlatButton:
+                id: compare_btn
+                text: "Compare"
+                icon: "compare"
+                theme_text_color: "Custom"
+                text_color: 1, 1, 1, 1
+                on_release: root.toggle_compare()
+
+        # ---------------------------------------------------------------
+        # Filter row - chips are built dynamically in preview.py from
+        # image_processing.filters.FILTER_LABELS (see refresh_filter_row).
+        # ---------------------------------------------------------------
         ScrollView:
             size_hint_y: None
-            height: dp(56)
+            height: dp(78)
             do_scroll_y: False
 
             MDBoxLayout:
                 id: filter_row
                 orientation: "horizontal"
                 adaptive_width: True
-                padding: dp(12), dp(4)
-                spacing: dp(8)
+                padding: dp(12), dp(6)
+                spacing: dp(10)
 
+        # ---------------------------------------------------------------
+        # Bottom toolbar: Retake, Left, Crop, Extract Text, Confirm
+        # ---------------------------------------------------------------
         MDBoxLayout:
-            orientation: "vertical"
+            orientation: "horizontal"
             size_hint_y: None
-            height: dp(128)
-            padding: dp(16), dp(8)
+            height: dp(84)
+            padding: dp(12), dp(6)
             spacing: dp(4)
             md_bg_color: 0, 0, 0, 1
 
             MDBoxLayout:
-                orientation: "horizontal"
-                spacing: dp(8)
+                orientation: "vertical"
+                spacing: dp(2)
 
-                MDFlatButton:
-                    text: "RETAKE"
+                MDIconButton:
+                    id: retake_btn
+                    icon: "camera-retake-outline"
                     theme_text_color: "Custom"
                     text_color: 1, 1, 1, 1
+                    pos_hint: {"center_x": 0.5}
                     on_release: root.retake()
 
-                MDFlatButton:
-                    text: "ADJUST CORNERS"
+                MDLabel:
+                    text: "Retake"
+                    halign: "center"
+                    font_style: "Caption"
                     theme_text_color: "Custom"
-                    text_color: 1, 1, 1, 1
-                    on_release: root.adjust_crop()
+                    text_color: 0.85, 0.85, 0.85, 1
 
             MDBoxLayout:
-                orientation: "horizontal"
-                spacing: dp(8)
+                orientation: "vertical"
+                spacing: dp(2)
 
-                MDRaisedButton:
-                    text: "SCAN ANOTHER PAGE"
-                    size_hint_x: 1
-                    on_release: root.scan_another()
+                MDIconButton:
+                    id: rotate_left_btn
+                    icon: "rotate-left-variant"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+                    pos_hint: {"center_x": 0.5}
+                    on_release: root.rotate_left()
 
-                MDRaisedButton:
-                    text: "DONE"
-                    size_hint_x: 1
-                    md_bg_color: app.theme_cls.accent_color
-                    on_release: root.finish_session()
+                MDLabel:
+                    text: "Left"
+                    halign: "center"
+                    font_style: "Caption"
+                    theme_text_color: "Custom"
+                    text_color: 0.85, 0.85, 0.85, 1
+
+            MDBoxLayout:
+                orientation: "vertical"
+                spacing: dp(2)
+
+                MDIconButton:
+                    id: crop_btn
+                    icon: "crop"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+                    pos_hint: {"center_x": 0.5}
+                    on_release: root.adjust_crop()
+
+                MDLabel:
+                    text: "Crop"
+                    halign: "center"
+                    font_style: "Caption"
+                    theme_text_color: "Custom"
+                    text_color: 0.85, 0.85, 0.85, 1
+
+            MDBoxLayout:
+                orientation: "vertical"
+                spacing: dp(2)
+
+                MDIconButton:
+                    id: extract_text_btn
+                    icon: "text-recognition"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+                    pos_hint: {"center_x": 0.5}
+                    on_release: root.extract_text()
+
+                MDLabel:
+                    text: "Extract Text"
+                    halign: "center"
+                    font_style: "Caption"
+                    theme_text_color: "Custom"
+                    text_color: 0.85, 0.85, 0.85, 1
+
+            Widget:
+                size_hint_x: None
+                width: dp(8)
+
+            MDIconButton:
+                id: confirm_btn
+                icon: "check"
+                theme_text_color: "Custom"
+                text_color: 1, 1, 1, 1
+                size_hint: None, None
+                size: dp(56), dp(56)
+                pos_hint: {"center_y": 0.5}
+                md_bg_color: 0.10, 0.72, 0.55, 1
+                on_release: root.confirm_page()
+                canvas.before:
+                    Color:
+                        rgba: 0.10, 0.72, 0.55, 1
+                    RoundedRectangle:
+                        pos: self.pos
+                        size: self.size
+                        radius: [dp(14)]

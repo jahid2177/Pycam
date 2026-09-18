@@ -1,0 +1,116 @@
+#:import dp kivy.metrics.dp
+
+<PhotoCell@ButtonBehavior+FloatLayout>:
+    # One grid cell. `on_toggle` is supplied per-row from PhotoPickerScreen's
+    # RecycleView data so this stays a dumb, reusable view.
+    media_id: None
+    thumb_path: ""
+    checked: False
+    on_toggle: None
+    size_hint_y: None
+    height: self.width
+    on_release: if root.on_toggle: root.on_toggle(root.media_id)
+
+    Image:
+        source: root.thumb_path
+        allow_stretch: True
+        keep_ratio: False
+        size_hint: 1, 1
+
+    canvas.after:
+        Color:
+            rgba: (0.03, 0.03, 0.04, 0.45) if root.checked else (0, 0, 0, 0)
+        Rectangle:
+            pos: self.pos
+            size: self.size
+
+    MDBoxLayout:
+        size_hint: None, None
+        size: dp(24), dp(24)
+        pos_hint: {"x": 0.04, "top": 0.94}
+
+        canvas.before:
+            Color:
+                rgba: (0.12, 0.88, 0.67, 1) if root.checked else (0, 0, 0, 0.35)
+            RoundedRectangle:
+                pos: self.pos
+                size: self.size
+                radius: [dp(5)]
+            Color:
+                rgba: 1, 1, 1, 0.9
+            Line:
+                rounded_rectangle: (self.x, self.y, self.width, self.height, dp(5))
+                width: dp(1.2)
+
+        MDIcon:
+            icon: "check" if root.checked else ""
+            theme_text_color: "Custom"
+            text_color: 1, 1, 1, 1
+            font_size: "16sp"
+            pos_hint: {"center_x": 0.5, "center_y": 0.5}
+
+
+<PhotoPickerScreen>:
+    select_label: select_label
+    import_btn: import_btn
+    photo_grid: photo_grid
+    status_label: status_label
+
+    MDBoxLayout:
+        orientation: "vertical"
+        md_bg_color: 0.04, 0.04, 0.05, 1
+
+        MDBoxLayout:
+            orientation: "horizontal"
+            size_hint_y: None
+            height: dp(56)
+            padding: dp(8), dp(4)
+            spacing: dp(4)
+
+            MDIconButton:
+                icon: "close"
+                theme_text_color: "Custom"
+                text_color: 1, 1, 1, 1
+                on_release: root.close_picker()
+
+            MDFlatButton:
+                id: select_label
+                text: "Select Photo"
+                icon: "menu-down"
+                theme_text_color: "Custom"
+                text_color: 1, 1, 1, 1
+                on_release: root.open_album_menu()
+
+            Widget:
+
+            MDRaisedButton:
+                id: import_btn
+                text: "Import(0)"
+                disabled: True
+                md_bg_color: 0.10, 0.72, 0.55, 1
+                disabled_color: 0.5, 0.5, 0.5, 1
+                on_release: root.import_selected()
+
+        RecycleView:
+            id: photo_grid
+            viewclass: "PhotoCell"
+            bar_width: dp(4)
+
+            RecycleGridLayout:
+                cols: 3
+                spacing: dp(2)
+                padding: dp(2)
+                default_size: None, None
+                default_size_hint: 1, None
+                size_hint_y: None
+                height: self.minimum_height
+
+        MDLabel:
+            id: status_label
+            text: ""
+            halign: "center"
+            theme_text_color: "Custom"
+            text_color: 0.8, 0.8, 0.8, 1
+            size_hint_y: None
+            height: dp(48) if self.text else 0
+            opacity: 1 if self.text else 0
