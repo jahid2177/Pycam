@@ -789,6 +789,228 @@ def apply_auto_enhance(
     return result
 
 
+def apply_lighten(
+    image_bgr: np.ndarray,
+) -> np.ndarray:
+    """
+    Simple global brightness lift.
+
+    Unlike Document/No Shadow this does not attempt to remove illumination
+    gradients - it just makes an underexposed page easier to read, quickly.
+    """
+    image = _validate_bgr(
+        image_bgr
+    )
+
+    lab = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2LAB,
+    )
+    l_channel, a_channel, b_channel = cv2.split(lab)
+
+    lifted = np.clip(
+        l_channel.astype(np.float32) * 1.18 + 8.0,
+        0,
+        255,
+    ).astype(np.uint8)
+
+    lab = cv2.merge(
+        (
+            lifted,
+            a_channel,
+            b_channel,
+        )
+    )
+
+    return cv2.cvtColor(
+        lab,
+        cv2.COLOR_LAB2BGR,
+    )
+
+
+def apply_no_shadow(
+    image_bgr: np.ndarray,
+) -> np.ndarray:
+    """
+    Remove uneven illumination/shadow gradients while keeping page colour.
+
+    This is the illumination-normalisation step Document mode already uses,
+    exposed on its own for pages that only need shadow cleanup.
+    """
+    image = _validate_bgr(
+        image_bgr
+    )
+
+    (
+        normalized_l,
+        a_channel,
+        b_channel,
+    ) = _normalize_lab_lightness(
+        image,
+        target_white=222.0,
+    )
+
+    lab = cv2.merge(
+        (
+            normalized_l,
+            a_channel,
+            b_channel,
+        )
+    )
+
+    return cv2.cvtColor(
+        lab,
+        cv2.COLOR_LAB2BGR,
+    )
+
+
+def _flatten_light_background(
+    gray: np.ndarray,
+    threshold: int = 140,
+    target: int = 255,
+) -> np.ndarray:
+    """
+    Push everything lighter than `threshold` toward `target` (white),
+    leaving darker ink/text untouched. Used to erase faint printed
+    watermarks/background patterns without affecting real content.
+    """
+    lut = np.arange(256, dtype=np.float32)
+    above = lut > threshold
+    scale = (target - threshold) / max(1.0, float(255 - threshold))
+    lut[above] = threshold + (lut[above] - threshold) * scale
+    lut = np.clip(lut, 0, 255).astype(np.uint8)
+    return cv2.LUT(gray, lut)
+
+
+def apply_no_watermark(
+    image_bgr: np.ndarray,
+) -> np.ndarray:
+    """
+    Best-effort removal of faint printed watermarks/background patterns.
+
+    Normalises illumination first, then flattens light-gray tones (the
+    watermark) toward pure white while leaving genuinely dark ink alone.
+    This is a heuristic, not true watermark segmentation - very dark or
+    high-contrast watermarks may still show through.
+    """
+    image = _validate_bgr(
+        image_bgr
+    )
+
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2GRAY,
+    )
+
+    normalized = _normalize_illumination_gray(
+        gray,
+        target_white=232.0,
+    )
+
+    flattened = _flatten_light_background(
+        normalized,
+        threshold=140,
+        target=255,
+    )
+
+    result = cv2.cvtColor(
+        flattened,
+        cv2.COLOR_GRAY2BGR,
+    )
+
+    return _mild_unsharp(
+        result,
+        amount=0.18,
+        sigma=1.0,
+    )
+
+
+def apply_no_handwriting(
+    image_bgr: np.ndarray,
+) -> np.ndarray:
+    """
+    Best-effort suppression of colored handwritten ink (blue/red pen),
+    leaving black/neutral printed text alone.
+
+    Heuristic only: it flags high-saturation pixels as "ink" and inpaints
+    over them using the surrounding page. It cannot distinguish handwriting
+    from printed text when both use the same neutral black ink.
+    """
+    image = _validate_bgr(
+        image_bgr
+    )
+
+    (
+        normalized_l,
+        a_channel,
+        b_channel,
+    ) = _normalize_lab_lightness(
+        image,
+        target_white=224.0,
+    )
+
+    balanced = cv2.cvtColor(
+        cv2.merge(
+            (
+                normalized_l,
+                a_channel,
+                b_channel,
+            )
+        ),
+        cv2.COLOR_LAB2BGR,
+    )
+
+    hsv = cv2.cvtColor(
+        balanced,
+        cv2.COLOR_BGR2HSV,
+    )
+    saturation = hsv[:, :, 1]
+
+    ink_mask = (saturation > 60).astype(np.uint8) * 255
+    ink_mask = cv2.dilate(
+        ink_mask,
+        np.ones((3, 3), np.uint8),
+        iterations=1,
+    )
+
+    if not np.any(ink_mask):
+        return balanced
+
+    return cv2.inpaint(
+        balanced,
+        ink_mask,
+        3,
+        cv2.INPAINT_TELEA,
+    )
+
+
+def apply_eco(
+    image_bgr: np.ndarray,
+) -> np.ndarray:
+    """
+    Ink-saving B&W: same pipeline as B&W but with a higher local-threshold
+    constant so fewer borderline pixels turn black, reducing the amount of
+    ink/toner a printout would use.
+    """
+    return apply_black_white(
+        image_bgr,
+        block_size=0,
+        c=20,
+    )
+
+
+def apply_invert(
+    image_bgr: np.ndarray,
+) -> np.ndarray:
+    """
+    Colour negative - useful for reading a page comfortably in the dark.
+    """
+    image = _validate_bgr(
+        image_bgr
+    )
+    return cv2.bitwise_not(image)
+
+
 # Historical function name kept for callers/code that may still use it.
 def apply_color_boost(
     image_bgr: np.ndarray,
@@ -803,29 +1025,46 @@ def apply_color_boost(
 # ---------------------------------------------------------------------------
 
 FILTERS = {
+    # Screenshot order - this is also the order buttons render in, since
+    # PreviewScreen iterates FILTER_LABELS.
     "original": apply_original,
+    "lighten": apply_lighten,
+    "enhance": apply_auto_enhance,
+    "magic_pro": apply_magic_color,
+    "no_watermark": apply_no_watermark,
+    "no_shadow": apply_no_shadow,
+    "no_handwriting": apply_no_handwriting,
+    "bw": apply_black_white,
+    "eco": apply_eco,
+    "grayscale": apply_grayscale,
+    "invert": apply_invert,
+
+    # Backward-compatible aliases for any previously cached/selected key.
+    # Not shown in FILTER_LABELS, so they don't create duplicate buttons.
     "auto": apply_auto_enhance,
     "document": apply_document,
     "magic_color": apply_magic_color,
-    "grayscale": apply_grayscale,
-    "bw": apply_black_white,
     "photo": apply_photo,
-
-    # Backward-compatible alias for any previously cached/selected key.
     "color_boost": apply_magic_color,
 }
 
 
-# Only user-facing modes belong here. PreviewScreen iterates this mapping to
-# create its filter buttons, so no Preview/KV modification is required.
+# Only user-facing modes belong here, in the exact order the filter row
+# should render (matches the reference design). PreviewScreen iterates
+# this mapping to create its filter buttons, so no Preview/KV modification
+# is required when this list changes.
 FILTER_LABELS = {
     "original": "Original",
-    "auto": "Auto",
-    "document": "Document",
-    "magic_color": "Magic Color",
-    "grayscale": "Grayscale",
+    "lighten": "Lighten",
+    "enhance": "Enhance",
+    "magic_pro": "Magic Pro",
+    "no_watermark": "No Watermark",
+    "no_shadow": "No Shadow",
+    "no_handwriting": "No Handwriting",
     "bw": "B&W",
-    "photo": "Photo",
+    "eco": "Eco",
+    "grayscale": "Grayscale",
+    "invert": "Invert",
 }
 
 
