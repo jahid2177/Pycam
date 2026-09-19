@@ -65,7 +65,7 @@ android.gradle_dependencies = com.google.android.gms:play-services-mlkit-text-re
 
 # Tess-two AAR bundles native binaries for multiple ABIs. This app is arm64-only,
 # so exclude foreign Tess/Leptonica binaries before APK signing to reduce size.
-android.add_packaging_options = "exclude 'lib/x86/libtess.so'", "exclude 'lib/x86/liblept.so'", "exclude 'lib/x86_64/libtess.so'", "exclude 'lib/x86_64/liblept.so'", "exclude 'lib/armeabi-v7a/libtess.so'", "exclude 'lib/armeabi-v7a/liblept.so'"
+android.add_packaging_options = "exclude 'lib/x86/**'", "exclude 'lib/x86_64/**'", "exclude 'lib/armeabi-v7a/**'"
 
 # ================================================================
 # STORAGE / ACTIVITY
