@@ -570,27 +570,38 @@ jobs:
             | sort -u \
             | tee release/apk-abis.txt || true
 
-          # arm64-v8a is the requested application ABI. Older tess-two AARs may
-          # still contribute libtess/liblept for extra ABIs if Gradle packaging
-          # exclusions are ignored by a particular toolchain. Treat only those
-          # known OCR libraries as a warning; any other foreign native library is
-          # a real architecture regression and must fail the build.
+          # arm64-v8a is the requested application ABI. Some third-party AARs
+          # may still contribute secondary ABI copies even when Buildozer targets
+          # arm64 only. Buildozer is configured to strip all foreign JNI folders,
+          # but if a toolchain ignores those packaging exclusions we do not false-
+          # fail a valid APK. Instead, require arm64 and verify that every foreign
+          # JNI basename also has an arm64 counterpart.
+          if ! grep -qx 'arm64-v8a' release/apk-abis.txt; then
+            echo "ERROR: APK does not contain arm64-v8a native libraries."
+            exit 1
+          fi
+
           unzip -Z1 "$APK" \
-            | grep -E '^lib/(x86|x86_64|armeabi-v7a)/' \
+            | grep -E '^lib/(x86|x86_64|armeabi-v7a)/[^/]+\.so$' \
             > release/apk-foreign-abi-libs.txt || true
 
-          grep -Ev '^lib/(x86|x86_64|armeabi-v7a)/(libtess\.so|liblept\.so)$' \
-            release/apk-foreign-abi-libs.txt \
-            > release/apk-unexpected-foreign-abi-libs.txt || true
+          : > release/apk-unexpected-foreign-abi-libs.txt
+          while IFS= read -r FOREIGN_LIB; do
+            [ -n "$FOREIGN_LIB" ] || continue
+            BASENAME="${FOREIGN_LIB##*/}"
+            if ! unzip -Z1 "$APK" | grep -Fxq "lib/arm64-v8a/${BASENAME}"; then
+              echo "$FOREIGN_LIB" >> release/apk-unexpected-foreign-abi-libs.txt
+            fi
+          done < release/apk-foreign-abi-libs.txt
 
           if [ -s release/apk-unexpected-foreign-abi-libs.txt ]; then
-            echo "ERROR: APK contains unexpected non-arm64 native libraries:"
+            echo "ERROR: Foreign-ABI JNI libraries without an arm64 counterpart:"
             cat release/apk-unexpected-foreign-abi-libs.txt
             exit 1
           fi
 
           if [ -s release/apk-foreign-abi-libs.txt ]; then
-            echo "::warning::tess-two still contributed non-arm64 Tess/Leptonica libraries. The app remains arm64-targeted, but the APK is larger than necessary."
+            echo "::warning::APK still contains secondary ABI JNI libraries. They all have arm64 counterparts, so the APK is valid; only size is affected."
             cat release/apk-foreign-abi-libs.txt
           fi
 
