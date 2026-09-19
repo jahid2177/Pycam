@@ -7,7 +7,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -21,6 +21,26 @@ jobs:
       # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # ============================================================
+      # OCR LANGUAGE DATA (ENGLISH + BENGALI)
+      # Pinned official tessdata_fast release.
+      # ============================================================
+      - name: Prepare OCR language data
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p assets/tessdata
+          for LANG in eng ben; do
+            curl --location --fail --show-error --silent \
+              --retry 5 --retry-delay 3 --retry-all-errors \
+              --output "assets/tessdata/${LANG}.traineddata" \
+              "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.1.0/${LANG}.traineddata"
+            test -s "assets/tessdata/${LANG}.traineddata"
+            SIZE=$(stat -c%s "assets/tessdata/${LANG}.traineddata")
+            test "$SIZE" -gt 100000
+            echo "OCR ${LANG} data: ${SIZE} bytes"
+          done
 
       # ============================================================
       # JAVA 17
@@ -39,6 +59,16 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+
+      # ============================================================
+      # FAST REGRESSION TESTS
+      # ============================================================
+      - name: Run fast integration smoke tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python -m compileall -q .
+          python -m unittest discover -s tests -p 'test_smoke.py' -v
 
       # ============================================================
       # SYSTEM DEPENDENCIES
@@ -148,6 +178,78 @@ jobs:
           test -f camerax_provider/gradle_options.py
 
       # ============================================================
+      # REPORTLAB 4.2.5 - PURE PYTHON VENDOR
+      #
+      # python-for-android v2024.01.21 still carries an old ReportLab
+      # recipe pinned to hg.reportlab.com (2016), which can return HTTP 403.
+      # ReportLab 4.x publishes a py3-none-any wheel, so vendor the official
+      # wheel into the app source and bypass the stale p4a recipe entirely.
+      # ============================================================
+      - name: Vendor ReportLab 4.2.5
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          REPORTLAB_VERSION="4.2.5"
+          REPORTLAB_WHEEL="/tmp/reportlab-${REPORTLAB_VERSION}-py3-none-any.whl"
+          REPORTLAB_SHA256="eb2745525a982d9880babb991619e97ac3f661fae30571b7d50387026ca765ee"
+          REPORTLAB_URL="https://files.pythonhosted.org/packages/73/12/6444906db1bc65d3a8118afb089d53c7eeca0726164f51eb3599de1d0665/reportlab-${REPORTLAB_VERSION}-py3-none-any.whl"
+
+          rm -rf reportlab
+          rm -f "$REPORTLAB_WHEEL"
+
+          curl \
+            --location \
+            --fail \
+            --show-error \
+            --silent \
+            --retry 8 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --max-time 600 \
+            --output "$REPORTLAB_WHEEL" \
+            "$REPORTLAB_URL"
+
+          echo "${REPORTLAB_SHA256}  ${REPORTLAB_WHEEL}" | sha256sum --check -
+
+          python - <<'PYREPORTLAB'
+          from pathlib import Path
+          import zipfile
+
+          wheel = Path('/tmp/reportlab-4.2.5-py3-none-any.whl')
+          root = Path('.')
+          with zipfile.ZipFile(wheel) as archive:
+              members = [n for n in archive.namelist() if n.startswith('reportlab/') and not n.endswith('/')]
+              if not members:
+                  raise SystemExit('ReportLab package not found in wheel')
+              for name in members:
+                  target = root / name
+                  target.parent.mkdir(parents=True, exist_ok=True)
+                  target.write_bytes(archive.read(name))
+          PYREPORTLAB
+
+          test -f reportlab/__init__.py
+          test -f reportlab/pdfgen/canvas.py
+          python - <<'PYVERIFY'
+          import sys
+          sys.path.insert(0, '.')
+          import reportlab
+          print('Vendored ReportLab:', getattr(reportlab, 'Version', getattr(reportlab, '__version__', 'unknown')))
+          PYVERIFY
+
+      # ============================================================
+      # RELEASE / BUILD PREFLIGHT
+      # Runs after OCR assets and CameraX hook are available, before
+      # the expensive Android toolchain compilation begins.
+      # ============================================================
+      - name: Run Android build preflight
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python .github/scripts/release_preflight.py --ci
+
+      # ============================================================
       # FREETYPE 2.14.1 - LOCAL OVERRIDE
       #
       # Savannah is returning HTTP 502 in GitHub Actions.
@@ -208,6 +310,10 @@ jobs:
           set -euxo pipefail
 
           test -f buildozer.spec
+          grep -q 'traineddata' buildozer.spec
+          grep -q 'com.rmtheis:tess-two:9.1.0' buildozer.spec
+          test -s assets/tessdata/eng.traineddata
+          test -s assets/tessdata/ben.traineddata
 
           echo "===== Requirements ====="
           grep -E '^requirements[[:space:]]*=' buildozer.spec
@@ -248,9 +354,9 @@ jobs:
         with:
           path: |
             ~/.buildozer/android/packages
-          key: pycam-python311-p4a20240121-freetype-local-v7-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          key: pycam-python311-p4a20240121-reportlab-wheel-v8-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            pycam-python311-p4a20240121-freetype-local-v7-${{ runner.os }}-
+            pycam-python311-p4a20240121-reportlab-wheel-v8-${{ runner.os }}-
 
       # ============================================================
       # BUILD
@@ -271,9 +377,14 @@ jobs:
 
           echo "===== Local recipe overrides =====" | tee -a buildozer-full.log
           echo "P4A_freetype_DIR=$P4A_freetype_DIR" | tee -a buildozer-full.log
+          echo "ReportLab is vendored from official 4.2.5 py3-none-any wheel; p4a recipe disabled." | tee -a buildozer-full.log
 
           test -f "$P4A_freetype_DIR/configure" || {
             echo "Local FreeType source not found."
+            exit 1
+          }
+          test -f reportlab/pdfgen/canvas.py || {
+            echo "Vendored ReportLab source not found."
             exit 1
           }
 
@@ -308,6 +419,17 @@ jobs:
             'freetype|P4A_freetype_DIR|local source|recipe source' \
             buildozer-full.log \
             | head -n 250 || true
+
+          echo "===== ReportLab evidence ====="
+          grep -nEi \
+            'reportlab|hg\.reportlab\.com|files\.pythonhosted\.org' \
+            buildozer-full.log \
+            | head -n 250 || true
+
+          if grep -q 'Downloading reportlab from https://hg.reportlab.com/' buildozer-full.log; then
+            echo "ERROR: stale python-for-android ReportLab recipe was selected."
+            exit 1
+          fi
 
           if grep -qE \
             'v3\.(12|13|14)\.[0-9]+\.tar\.gz|cpython-3\.(12|13|14)|python3\.(12|13|14)' \
@@ -352,7 +474,7 @@ jobs:
             {
               echo "===== FREETYPE EVENTS ====="
               grep -nEi \
-                'freetype|savannah|sourceforge|P4A_freetype_DIR' \
+                'freetype|savannah|sourceforge|P4A_freetype_DIR|reportlab|hg\.reportlab\.com|pythonhosted' \
                 buildozer-full.log \
                 | tail -n 400 || true
 
@@ -396,16 +518,116 @@ jobs:
           sed -n '1,1600p' build-debug/error-summary.txt 2>/dev/null || true
 
       # ============================================================
-      # UPLOAD APK
+      # PACKAGE DEBUG APK / CHECKSUM / SUMMARY
+      # ============================================================
+      - name: Package debug APK
+        if: success()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p release
+          APK_SOURCE="$(find bin -maxdepth 2 -type f -name '*.apk' | head -n 1)"
+          test -n "$APK_SOURCE"
+          cp "$APK_SOURCE" release/Pycam-Debug.apk
+          (cd release && sha256sum Pycam-Debug.apk > Pycam-Debug.apk.sha256)
+          SIZE_BYTES="$(stat -c%s release/Pycam-Debug.apk)"
+          SIZE_MB="$(python -c 'import os; print("%.2f" % (os.path.getsize("release/Pycam-Debug.apk") / 1024 / 1024))')"
+          {
+            echo "## Pycam Debug APK"
+            echo ""
+            echo "- APK: \`Pycam-Debug.apk\`"
+            echo "- Architecture: \`arm64-v8a\`"
+            echo "- Size: **${SIZE_MB} MB** (${SIZE_BYTES} bytes)"
+            echo "- SHA-256: \`$(cut -d' ' -f1 release/Pycam-Debug.apk.sha256)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ============================================================
+      # APK SIZE / ABI / PERMISSION AUDIT
+      # ============================================================
+      - name: Audit APK contents
+        if: success()
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          APK="release/Pycam-Debug.apk"
+          test -f "$APK"
+
+          echo "===== Largest APK entries ====="
+          unzip -l "$APK" \
+            | awk 'NR>3 && $1 ~ /^[0-9]+$/ {print $1, $4}' \
+            | sort -nr \
+            | head -n 30 \
+            | tee release/apk-largest-files.txt
+
+          echo "===== ABI directories ====="
+          unzip -Z1 "$APK" \
+            | grep '^lib/' \
+            | cut -d/ -f2 \
+            | sort -u \
+            | tee release/apk-abis.txt || true
+
+          if grep -Eq '^(x86|x86_64|armeabi-v7a)$' release/apk-abis.txt; then
+            echo "ERROR: APK contains an ABI other than arm64-v8a."
+            cat release/apk-abis.txt
+            exit 1
+          fi
+
+          SIZE_BYTES="$(stat -c%s "$APK")"
+          SIZE_MB="$(python -c 'import os; print("%.2f" % (os.path.getsize("release/Pycam-Debug.apk") / 1024 / 1024))')"
+          {
+            echo ""
+            echo "### APK size audit"
+            echo ""
+            echo "- Debug APK size: **${SIZE_MB} MB**"
+            echo "- Packaged ABI(s): \`$(tr '\n' ' ' < release/apk-abis.txt | xargs)\`"
+            echo "- Development-only test/debug directories are excluded by Buildozer."
+            echo "- Video media and legacy write-storage permissions are not requested."
+            echo ""
+            echo "Largest packaged entries:"
+            echo '```text'
+            head -n 15 release/apk-largest-files.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$SIZE_BYTES" -gt $((180 * 1024 * 1024)) ]; then
+            echo "::warning::Debug APK is larger than 180 MB. OpenCV/Kivy/Python debug native libraries are likely the main contributors; see apk-largest-files.txt."
+          fi
+
+      # ============================================================
+      # UPLOAD DEBUG APK ARTIFACT
       # ============================================================
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Pycam-Android-APK
-          path: bin/*.apk
+          name: Pycam-Debug-APK
+          path: |
+            release/Pycam-Debug.apk
+            release/Pycam-Debug.apk.sha256
+            release/apk-largest-files.txt
+            release/apk-abis.txt
           if-no-files-found: error
           retention-days: 30
+
+      # ============================================================
+      # GITHUB PRERELEASE - DEBUG APK ONLY
+      # ============================================================
+      - name: Publish debug APK to GitHub Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TAG="debug-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" \
+            release/Pycam-Debug.apk \
+            release/Pycam-Debug.apk.sha256 \
+            --target "$GITHUB_SHA" \
+            --title "Pycam Debug Build ${GITHUB_RUN_NUMBER}" \
+            --notes "Automated arm64-v8a debug build. No release APK is built." \
+            --prerelease
 
       # ============================================================
       # UPLOAD FAILURE LOG

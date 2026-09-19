@@ -48,7 +48,7 @@ REQUIRED_BUILD_REQS = (
     "opencv",
     "camera4kivy",
     "androidstorage4kivy",
-    "reportlab",
+    "chardet==5.2.0",
     "pypdf",
     "qrcode",
     "pyaes==1.6.1",
@@ -122,9 +122,11 @@ def run_preflight(strict_assets: bool = False) -> dict:
     build_reqs = set(_csv(spec.get("requirements", "")))
     for req in REQUIRED_BUILD_REQS:
         require(req in build_reqs, f"Build requirement present: {req}")
+    require("reportlab" not in build_reqs, "Stale p4a ReportLab recipe is disabled")
 
     include_exts = set(_csv(spec.get("source.include_exts", "")))
     require("traineddata" in include_exts, "Tesseract traineddata is included in APK sources")
+    require("afm" in include_exts and "pfb" in include_exts, "ReportLab font resource extensions are packaged")
 
     excluded = set(_csv(spec.get("source.exclude_dirs", "")))
     for required_exclusion in (".github", "tests", ".buildozer", "bin", "release", "build-debug"):
@@ -172,6 +174,16 @@ def run_preflight(strict_assets: bool = False) -> dict:
     require("pycam-debug.apk.sha256" in workflow_lower, "Debug APK SHA-256 artifact is generated")
     require("release/apk-abis.txt" in workflow_lower, "APK ABI audit artifact is generated")
     require("release/apk-largest-files.txt" in workflow_lower, "APK size audit artifact is generated")
+    require("vendor reportlab 4.2.5" in workflow_lower, "Workflow vendors ReportLab 4.2.5")
+    require("reportlab-4.2.5-py3-none-any.whl" in workflow_lower, "Workflow uses ReportLab pure-Python wheel")
+    require("eb2745525a982d9880babb991619e97ac3f661fae30571b7d50387026ca765ee" in workflow_lower, "ReportLab wheel SHA-256 is pinned")
+    require("hg.reportlab.com" not in spec_text.lower(), "Buildozer spec has no stale ReportLab download URL")
+
+    vendored_reportlab = ROOT / "reportlab" / "pdfgen" / "canvas.py"
+    if strict_assets:
+        require(vendored_reportlab.is_file(), "Vendored ReportLab package exists before Android build")
+    elif not vendored_reportlab.is_file():
+        warnings.append("ReportLab package is not present locally; CI vendors 4.2.5 before strict preflight.")
 
     hook = ROOT / "camerax_provider" / "gradle_options.py"
     if strict_assets:
@@ -194,7 +206,7 @@ def run_preflight(strict_assets: bool = False) -> dict:
 
     # Host requirements are for local/tests and intentionally differ from p4a recipe names.
     req_text = _read("requirements.txt").lower()
-    for marker in ("kivy==2.3.0", "kivymd==1.2.0", "pyaes==1.6.1"):
+    for marker in ("kivy==2.3.0", "kivymd==1.2.0", "reportlab==4.2.5", "chardet==5.2.0", "pyaes==1.6.1"):
         require(marker in req_text, f"Host requirement pin present: {marker}")
 
     report = {
