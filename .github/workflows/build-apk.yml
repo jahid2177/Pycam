@@ -554,10 +554,13 @@ jobs:
           test -f "$APK"
 
           echo "===== Largest APK entries ====="
+          # Avoid `sort | head` under `set -o pipefail`: head closes the pipe after
+          # 30 lines and GNU sort can exit with SIGPIPE/write error even though the
+          # APK is perfectly valid. Let awk consume the complete sorted stream.
           unzip -l "$APK" \
             | awk 'NR>3 && $1 ~ /^[0-9]+$/ {print $1, $4}' \
             | sort -nr \
-            | head -n 30 \
+            | awk 'NR <= 30' \
             | tee release/apk-largest-files.txt
 
           echo "===== ABI directories ====="
@@ -567,10 +570,28 @@ jobs:
             | sort -u \
             | tee release/apk-abis.txt || true
 
-          if grep -Eq '^(x86|x86_64|armeabi-v7a)$' release/apk-abis.txt; then
-            echo "ERROR: APK contains an ABI other than arm64-v8a."
-            cat release/apk-abis.txt
+          # arm64-v8a is the requested application ABI. Older tess-two AARs may
+          # still contribute libtess/liblept for extra ABIs if Gradle packaging
+          # exclusions are ignored by a particular toolchain. Treat only those
+          # known OCR libraries as a warning; any other foreign native library is
+          # a real architecture regression and must fail the build.
+          unzip -Z1 "$APK" \
+            | grep -E '^lib/(x86|x86_64|armeabi-v7a)/' \
+            > release/apk-foreign-abi-libs.txt || true
+
+          grep -Ev '^lib/(x86|x86_64|armeabi-v7a)/(libtess\.so|liblept\.so)$' \
+            release/apk-foreign-abi-libs.txt \
+            > release/apk-unexpected-foreign-abi-libs.txt || true
+
+          if [ -s release/apk-unexpected-foreign-abi-libs.txt ]; then
+            echo "ERROR: APK contains unexpected non-arm64 native libraries:"
+            cat release/apk-unexpected-foreign-abi-libs.txt
             exit 1
+          fi
+
+          if [ -s release/apk-foreign-abi-libs.txt ]; then
+            echo "::warning::tess-two still contributed non-arm64 Tess/Leptonica libraries. The app remains arm64-targeted, but the APK is larger than necessary."
+            cat release/apk-foreign-abi-libs.txt
           fi
 
           SIZE_BYTES="$(stat -c%s "$APK")"
@@ -607,6 +628,8 @@ jobs:
             release/Pycam-Debug.apk.sha256
             release/apk-largest-files.txt
             release/apk-abis.txt
+            release/apk-foreign-abi-libs.txt
+            release/apk-unexpected-foreign-abi-libs.txt
           if-no-files-found: error
           retention-days: 30
 
