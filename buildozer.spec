@@ -6,16 +6,16 @@
 title = Pycam
 package.name = pycam
 package.domain = com.jahid2177
-version = 1.0.0
+version = 1.1.0
 
 
 # ================================================================
 # SOURCE FILES
 # ================================================================
 source.dir = .
-source.include_exts = py,kv,png,jpg,jpeg,webp,atlas,json,txt,ttf,otf,xml
-source.exclude_dirs = .git,.github,.buildozer,bin,__pycache__,venv,.venv,camerax_provider/.git
-source.exclude_patterns = *.pyc,*.pyo,*.log
+source.include_exts = py,kv,png,jpg,jpeg,webp,atlas,json,txt,ttf,otf,xml,traineddata
+source.exclude_dirs = .git,.github,.buildozer,bin,__pycache__,venv,.venv,camerax_provider/.git,tests,build-debug,release,.pytest_cache
+source.exclude_patterns = *.pyc,*.pyo,*.log,*.zip,*.apk,*.aab,*.sha256,*~
 
 
 # ================================================================
@@ -26,7 +26,7 @@ source.exclude_patterns = *.pyc,*.pyo,*.log
 # We pin BOTH target Python and hostpython to 3.11.5 and pair them
 # with python-for-android v2024.01.21, whose Python recipe defaults to 3.11.5.
 # ================================================================
-requirements = python3==3.11.5,hostpython3==3.11.5,kivy==2.3.0,kivymd==1.2.0,pyjnius,numpy,pillow,opencv,camera4kivy,gestures4kivy,androidstorage4kivy
+requirements = python3==3.11.5,hostpython3==3.11.5,kivy==2.3.0,kivymd==1.2.0,pyjnius,numpy,pillow,opencv,camera4kivy,gestures4kivy,androidstorage4kivy,reportlab,pypdf,qrcode,pyaes==1.6.1
 
 
 # ================================================================
@@ -49,14 +49,14 @@ android.archs = arm64-v8a
 # ================================================================
 # ANDROID PERMISSIONS
 # ================================================================
-android.permissions = CAMERA,INTERNET,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,READ_MEDIA_IMAGES,READ_MEDIA_VIDEO,POST_NOTIFICATIONS
+android.permissions = CAMERA,INTERNET,(name=android.permission.READ_EXTERNAL_STORAGE;maxSdkVersion=32),READ_MEDIA_IMAGES,POST_NOTIFICATIONS,USE_BIOMETRIC
 
 
 # ================================================================
 # ML KIT OCR
 # Required by ocr/mlkit_ocr.py for Extract Text / Photo Translation.
 # ================================================================
-android.gradle_dependencies = com.google.android.gms:play-services-mlkit-text-recognition:19.0.1
+android.gradle_dependencies = com.google.android.gms:play-services-mlkit-text-recognition:19.0.1,com.rmtheis:tess-two:9.1.0
 
 # ================================================================
 # STORAGE / ACTIVITY

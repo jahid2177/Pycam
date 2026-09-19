@@ -70,11 +70,14 @@ MAX_MISSED_DETECTION_FRAMES = 5
 # Auto-capture quality thresholds tuned for ~720 px analysis frames.
 MIN_DOCUMENT_AREA_RATIO = 0.125
 GOOD_DOCUMENT_AREA_RATIO = 0.18
+MAX_DOCUMENT_AREA_RATIO = 0.84
 
 MIN_MEAN_BRIGHTNESS = 42.0
 MAX_MEAN_BRIGHTNESS = 220.0
 MAX_DARK_PIXEL_RATIO = 0.46
 MAX_BRIGHT_PIXEL_RATIO = 0.42
+MAX_GLARE_RATIO = 0.115
+MAX_SHADOW_SCORE = 0.34
 
 # Variance of Laplacian is content/resolution dependent. This intentionally
 # uses a conservative low threshold for a 720px preview frame; final captured
@@ -161,6 +164,8 @@ class DocumentCamera(Preview):
         self._pending_jump_count = 0
 
         self._torch_on = False
+        self._camera_id = "back" if platform == "android" else "0"
+        self._analysis_resolution = ANALYSIS_RESOLUTION
 
         self.last_quality = FrameQuality()
 
@@ -191,14 +196,10 @@ class DocumentCamera(Preview):
 
         try:
             self.connect_camera(
-                camera_id=(
-                    "back"
-                    if platform == "android"
-                    else "0"
-                ),
+                camera_id=self._camera_id,
                 filepath_callback=self._on_captured,
                 enable_analyze_pixels=bool(analyze),
-                analyze_pixels_resolution=ANALYSIS_RESOLUTION,
+                analyze_pixels_resolution=int(self._analysis_resolution),
                 enable_video=False,
                 enable_zoom_gesture=True,
                 enable_focus_gesture=True,
@@ -273,6 +274,47 @@ class DocumentCamera(Preview):
             Clock.schedule_once(lambda dt: self.canvas.ask_update(), 0)
         except Exception:
             pass
+
+
+    @property
+    def camera_id(self):
+        return self._camera_id
+
+    def switch_camera(self, facing: str) -> bool:
+        """Reconnect Camera4Kivy using the requested front/back camera."""
+        facing = str(facing or "back").lower()
+        if platform != "android":
+            return False
+        if facing not in ("front", "back"):
+            return False
+        if facing == self._camera_id and self._session_running:
+            return True
+        try:
+            self.stop()
+            self._camera_id = facing
+            self.start(analyze=True)
+            return bool(self._session_running)
+        except Exception as exc:
+            self._notify_camera_error(f"Could not switch camera: {exc}")
+            return False
+
+    def set_analysis_quality(self, high: bool) -> bool:
+        """Reconnect analysis stream at a higher/lower resolution."""
+        target = 960 if bool(high) else 540
+        if target == self._analysis_resolution:
+            return True
+        self._analysis_resolution = target
+        if not self._session_running:
+            return True
+        current = self._camera_id
+        try:
+            self.stop()
+            self._camera_id = current
+            self.start(analyze=True)
+            return bool(self._session_running)
+        except Exception as exc:
+            self._notify_camera_error(f"Could not change scan quality: {exc}")
+            return False
 
     # ------------------------------------------------------------------
     # Flash / torch
@@ -645,22 +687,14 @@ class DocumentCamera(Preview):
             * VISIBLE_MARGIN_RATIO
         )
 
-        fully_visible = bool(
-            np.all(
-                q[:, 0] >= margin_x
-            )
-            and np.all(
-                q[:, 0]
-                <= frame_w - 1 - margin_x
-            )
-            and np.all(
-                q[:, 1] >= margin_y
-            )
-            and np.all(
-                q[:, 1]
-                <= frame_h - 1 - margin_y
-            )
+        clipped_mask = (
+            (q[:, 0] < margin_x)
+            | (q[:, 0] > frame_w - 1 - margin_x)
+            | (q[:, 1] < margin_y)
+            | (q[:, 1] > frame_h - 1 - margin_y)
         )
+        clipped_edge_count = int(np.count_nonzero(clipped_mask))
+        fully_visible = clipped_edge_count == 0
 
         # Work on a padded bounding box and a polygon mask. This avoids a
         # full-frame Laplacian allocation every analyzed frame.
@@ -736,19 +770,34 @@ class DocumentCamera(Preview):
                 reason="Hold steady",
             )
 
-        brightness = float(
-            np.mean(pixels)
-        )
-        dark_ratio = float(
-            np.mean(
-                pixels < 35
-            )
-        )
-        bright_ratio = float(
-            np.mean(
-                pixels > 245
-            )
-        )
+        brightness = float(np.mean(pixels))
+        dark_ratio = float(np.mean(pixels < 35))
+        bright_ratio = float(np.mean(pixels > 245))
+
+        # Glare: very bright low-saturation islands are a better signal than
+        # brightness alone because normal white paper can legitimately occupy
+        # much of the histogram.  Limit the metric to the detected page mask.
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        glare_mask = (
+            (hsv[:, :, 2] >= 250)
+            & (hsv[:, :, 1] <= 38)
+            & (mask > 0)
+        ).astype(np.uint8)
+        glare_ratio = float(np.count_nonzero(glare_mask) / max(np.count_nonzero(mask), 1))
+
+        # Shadow/uneven illumination: evaluate only the slow-changing light
+        # field so printed text does not look like a shadow.
+        blur_k = max(21, int(min(gray.shape[:2]) * 0.10))
+        if blur_k % 2 == 0:
+            blur_k += 1
+        blur_k = min(101, blur_k)
+        illumination = cv2.GaussianBlur(gray, (blur_k, blur_k), 0)
+        illumination_pixels = illumination[mask > 0]
+        if illumination_pixels.size:
+            i10, i90 = np.percentile(illumination_pixels, [10, 90])
+            shadow_score = float(max(0.0, i90 - i10) / 255.0)
+        else:
+            shadow_score = 0.0
 
         # Downsample only very large ROI before Laplacian. The analysis frame
         # is already ~720px long edge, so this normally keeps original size.
@@ -798,35 +847,36 @@ class DocumentCamera(Preview):
         # -------------------------------------------------------------
         # Ordered feedback priority
         # -------------------------------------------------------------
-        if (
-            document_area_ratio
-            < MIN_DOCUMENT_AREA_RATIO
-        ):
+        if document_area_ratio < MIN_DOCUMENT_AREA_RATIO:
             reason = "Move closer"
             acceptable = False
 
-        elif not fully_visible:
-            reason = (
-                "Document not fully visible"
-            )
+        elif document_area_ratio > MAX_DOCUMENT_AREA_RATIO:
+            reason = "Move farther"
             acceptable = False
 
-        elif (
-            brightness
-            < MIN_MEAN_BRIGHTNESS
-            or dark_ratio
-            > MAX_DARK_PIXEL_RATIO
-        ):
+        elif not fully_visible:
+            reason = "Show all 4 edges"
+            acceptable = False
+
+        elif brightness < MIN_MEAN_BRIGHTNESS or dark_ratio > MAX_DARK_PIXEL_RATIO:
             reason = "More light needed"
             acceptable = False
 
         elif (
-            brightness
-            > MAX_MEAN_BRIGHTNESS
-            or bright_ratio
-            > MAX_BRIGHT_PIXEL_RATIO
+            glare_ratio > MAX_GLARE_RATIO
+            and bright_ratio > 0.16
+            and brightness > 150.0
         ):
+            reason = "Reduce glare"
+            acceptable = False
+
+        elif brightness > MAX_MEAN_BRIGHTNESS or bright_ratio > MAX_BRIGHT_PIXEL_RATIO:
             reason = "Too bright"
+            acceptable = False
+
+        elif shadow_score > MAX_SHADOW_SCORE and brightness < 205.0:
+            reason = "Fix shadows"
             acceptable = False
 
         elif sharpness < MIN_SHARPNESS:
@@ -846,6 +896,9 @@ class DocumentCamera(Preview):
                 document_area_ratio
             ),
             fully_visible=fully_visible,
+            glare_ratio=glare_ratio,
+            shadow_score=shadow_score,
+            clipped_edge_count=clipped_edge_count,
             acceptable=acceptable,
             reason=reason,
         )

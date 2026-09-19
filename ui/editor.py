@@ -120,11 +120,17 @@ class EditorScreen(MDScreen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._busy = False
+        self._history = []
+        self._future = []
 
         root = MDBoxLayout(orientation="vertical")
 
         self.toolbar = MDTopAppBar(title="Pages", elevation=2)
         self.toolbar.left_action_items = [["arrow-left", lambda x: self.go_home()]]
+        self.toolbar.right_action_items = [
+            ["undo-variant", lambda x: self.undo_pages()],
+            ["redo-variant", lambda x: self.redo_pages()],
+        ]
         root.add_widget(self.toolbar)
 
         scroll = ScrollView(do_scroll_y=False, size_hint=(1, 1))
@@ -178,6 +184,39 @@ class EditorScreen(MDScreen):
         self.empty_label.opacity = 1 if not pages else 0
         self.save_button.disabled = not pages or self._busy
 
+    # ---- Page list history ------------------------------------------------
+
+    def _schedule_autosave(self, reason):
+        try:
+            MDApp.get_running_app().schedule_session_autosave(reason)
+        except Exception:
+            pass
+
+    def _remember_pages(self):
+        pages = list(MDApp.get_running_app().active_session_pages)
+        self._history.append(pages)
+        if len(self._history) > 20:
+            self._history.pop(0)
+        self._future.clear()
+
+    def undo_pages(self):
+        app = MDApp.get_running_app()
+        if not self._history or self._busy:
+            return
+        self._future.append(list(app.active_session_pages))
+        app.active_session_pages[:] = self._history.pop()
+        self.refresh_pages()
+        self._schedule_autosave("editor_undo")
+
+    def redo_pages(self):
+        app = MDApp.get_running_app()
+        if not self._future or self._busy:
+            return
+        self._history.append(list(app.active_session_pages))
+        app.active_session_pages[:] = self._future.pop()
+        self.refresh_pages()
+        self._schedule_autosave("editor_redo")
+
     # ---- Page actions -----------------------------------------------------
 
     def move_left(self, index):
@@ -185,16 +224,20 @@ class EditorScreen(MDScreen):
         pages = app.active_session_pages
         if index <= 0 or index >= len(pages):
             return
+        self._remember_pages()
         pages[index - 1], pages[index] = pages[index], pages[index - 1]
         self.refresh_pages()
+        self._schedule_autosave("editor_reorder")
 
     def move_right(self, index):
         app = MDApp.get_running_app()
         pages = app.active_session_pages
         if index < 0 or index >= len(pages) - 1:
             return
+        self._remember_pages()
         pages[index + 1], pages[index] = pages[index], pages[index + 1]
         self.refresh_pages()
+        self._schedule_autosave("editor_reorder")
 
     def delete_page(self, index):
         app = MDApp.get_running_app()
@@ -202,8 +245,10 @@ class EditorScreen(MDScreen):
 
         def do_delete(*a):
             if 0 <= index < len(pages):
+                self._remember_pages()
                 pages.pop(index)
             self.refresh_pages()
+            self._schedule_autosave("editor_delete")
             dialog.dismiss()
 
         dialog = MDDialog(
@@ -240,12 +285,24 @@ class EditorScreen(MDScreen):
             if isinstance(card, PageCard) and card.index == index:
                 card.reload_image()
                 break
+        self._schedule_autosave("editor_rotate")
 
     def add_page(self):
         MDApp.get_running_app().go_to("scanner")
 
     def go_home(self):
-        MDApp.get_running_app().go_to("home")
+        app = MDApp.get_running_app()
+        if app.editing_document_id is not None:
+            doc = app.db.get_document(app.editing_document_id)
+            if doc and doc.get("protected"):
+                try:
+                    from storage.private_vault import cleanup_materialized
+                    cleanup_materialized(getattr(app, "private_unlock_temp", None))
+                    app.private_unlock_temp = None
+                    app.active_session_pages = []
+                except Exception:
+                    pass
+        app.go_to("home")
 
     def _set_busy(self, busy: bool):
         self._busy = busy
@@ -262,7 +319,18 @@ class EditorScreen(MDScreen):
             existing = app.db.get_document(app.editing_document_id)
             default_name = existing["name"] if existing else "Untitled"
         else:
-            default_name = f"Scan {datetime.now().strftime('%b %d, %Y %H:%M')}"
+            now = datetime.now()
+            template = app.prefs.get("filename_template") or "Scan_{date}_{time}"
+            try:
+                default_name = str(template).format(
+                    date=now.strftime("%Y-%m-%d"),
+                    time=now.strftime("%H-%M"),
+                    datetime=now.strftime("%Y-%m-%d_%H-%M"),
+                ).strip()
+            except Exception:
+                default_name = ""
+            if not default_name:
+                default_name = f"Scan {now.strftime('%b %d, %Y %H:%M')}"
 
         field = MDTextField(text=default_name, hint_text="Document name")
 
@@ -292,7 +360,14 @@ class EditorScreen(MDScreen):
         is_new_document = app.editing_document_id is None
 
         if app.editing_document_id is not None:
-            app.db.update_pages(app.editing_document_id, pages)
+            existing = app.db.get_document(app.editing_document_id)
+            if existing and existing.get("protected"):
+                from storage.private_vault import store_document_pages, cleanup_materialized
+                store_document_pages(app, app.editing_document_id, pages)
+                cleanup_materialized(getattr(app, "private_unlock_temp", None))
+                app.private_unlock_temp = None
+            else:
+                app.db.update_pages(app.editing_document_id, pages)
             app.db.rename_document(app.editing_document_id, name)
         else:
             app.db.create_document(
@@ -310,4 +385,8 @@ class EditorScreen(MDScreen):
         app.editing_document_id = None
         app.latest_capture_path = None
         app.latest_raw_path = None
+        try:
+            app.clear_session_draft()
+        except Exception:
+            pass
         app.go_to("home")

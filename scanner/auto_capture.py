@@ -42,6 +42,9 @@ class FrameQuality:
     bright_ratio: float = 0.0
     document_area_ratio: float = 0.0
     fully_visible: bool = False
+    glare_ratio: float = 0.0
+    shadow_score: float = 0.0
+    clipped_edge_count: int = 0
     acceptable: bool = False
     reason: str = "Find document"
 

@@ -23,6 +23,7 @@ from kivymd.uix.button import (
 )
 from kivymd.uix.dialog import MDDialog
 from kivymd.uix.label import MDLabel
+from kivymd.app import MDApp
 
 
 ACTIVE = (
@@ -174,23 +175,29 @@ def show_export_dialog(
     preferred_format: str,
     callback,
 ):
+    try:
+        prefs = MDApp.get_running_app().prefs
+        default_page = prefs.get("pdf_page_size") or "a4"
+        margin_name = prefs.get("pdf_margin") or "normal"
+        default_quality = prefs.get("export_quality") or "balanced"
+        default_searchable = bool(prefs.get("searchable_pdf"))
+    except Exception:
+        default_page, margin_name, default_quality, default_searchable = "a4", "normal", "balanced", False
+
+    margin_map = {"none": 0.0, "small": 12.0, "normal": 24.0, "large": 36.0}
     state = {
-        "format": (
-            preferred_format
-            if preferred_format
-            in ("pdf", "jpg", "png")
-            else "pdf"
-        ),
-        "page_size": "a4",
+        "format": (preferred_format if preferred_format in ("pdf", "jpg", "png") else "pdf"),
+        "page_size": default_page if default_page in ("auto", "a4", "letter", "legal") else "a4",
         "orientation": "auto",
-        "margin_pt": 24.0,
-        "quality": "balanced",
+        "margin_pt": margin_map.get(margin_name, 24.0),
+        "quality": default_quality if default_quality in ("high", "balanced", "small") else "balanced",
+        "searchable": default_searchable,
     }
 
     content = MDBoxLayout(
         orientation="vertical",
         size_hint_y=None,
-        height=dp(360),
+        height=dp(430),
         spacing=dp(2),
         padding=(
             dp(4),
@@ -214,6 +221,7 @@ def show_export_dialog(
             page_section,
             orientation_section,
             margin_section,
+            searchable_section,
         ):
             section.disabled = (
                 not pdf_mode
@@ -279,6 +287,13 @@ def show_export_dialog(
             ),
     )
 
+    searchable_section = _section(
+        "Searchable PDF",
+        (("Off", False), ("On", True)),
+        state["searchable"],
+        lambda value: set_value("searchable", value),
+    )
+
     content.add_widget(
         format_section
     )
@@ -293,6 +308,9 @@ def show_export_dialog(
     )
     content.add_widget(
         quality_section
+    )
+    content.add_widget(
+        searchable_section
     )
 
     dialog = None
@@ -311,6 +329,9 @@ def show_export_dialog(
             "quality": state[
                 "quality"
             ],
+            "searchable": bool(
+                state["searchable"]
+            ),
         }
 
         dialog.dismiss()

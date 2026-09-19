@@ -9,6 +9,10 @@ from kivymd.uix.dialog import MDDialog
 from kivymd.uix.label import MDLabel
 from kivymd.uix.screen import MDScreen
 from kivymd.uix.toolbar import MDTopAppBar
+from kivymd.uix.textfield import MDTextField
+
+from storage.localization import tr
+from storage.accessibility import label_widget, ensure_touch_target
 
 from ui.navigation import BottomNavigationBar
 
@@ -24,53 +28,44 @@ ACCENTS = [
 ]
 
 TOOL_SECTIONS = [
-    (
-        "Scan",
-        [
-            ("card-account-details-outline", "ID Cards", "id_cards"),
-            ("text-recognition", "Extract Text", "extract_text"),
-            ("account-box-outline", "Passport\nPhoto Maker", "passport_photo"),
-            ("translate", "Photo\nTranslation", "photo_translation"),
-            ("qrcode-scan", "Scan Code", "scan_code"),
-        ],
-    ),
-    (
-        "Convert",
-        [
-            ("merge", "Merge PDF", "merge_pdf"),
-            ("image-outline", "Image to PDF", "image_to_pdf"),
-            ("file-document-edit-outline", "Text to PDF", "text_to_pdf"),
-            ("file-word-outline", "To Word", "to_word"),
-            ("microsoft-excel", "To Excel", "to_excel"),
-            ("image-multiple-outline", "PDF to\nImages", "pdf_to_images"),
-            ("image-size-select-large", "PDF to Long\nImage", "pdf_long_image"),
-        ],
-    ),
-    (
-        "Edit",
-        [
-            ("crop-free", "OpenCV Crop", "opencv_crop"),
-            ("auto-fix", "BG Remover", "bg_remover"),
-            ("crop", "Image Resizer", "image_resizer"),
-            ("call-split", "Split PDF", "split_pdf"),
-            ("draw-pen", "Sign", "sign"),
-            ("watermark", "Add\nWatermark", "watermark"),
-            ("file-export-outline", "Extract PDF\nPages", "extract_pages"),
-            ("swap-vertical", "Reorder\nPages", "reorder_pages"),
-            ("rotate-right", "Rotate PDF", "rotate_pdf"),
-            ("lock-outline", "Lock", "lock_pdf"),
-            ("arrow-collapse-vertical", "Compress", "compress_pdf"),
-        ],
-    ),
-    (
-        "Utilities",
-        [
-            ("head-cog-outline", "AI Chat", "ai_chat"),
-            ("printer-outline", "Print", "print"),
-            ("qrcode", "Create QR\nCode", "create_qr"),
-        ],
-    ),
+    ("scan", [
+        ("card-account-details-outline", "tool_id_cards", "id_cards"),
+        ("card-text-outline", "tool_nid_ocr", "nid_intelligence"),
+        ("passport", "tool_passport_mrz", "passport_mrz"),
+        ("text-recognition", "tool_extract_text", "extract_text"),
+        ("account-box-outline", "tool_passport_photo", "passport_photo"),
+        ("translate", "tool_photo_translation", "photo_translation"),
+        ("qrcode-scan", "tool_scan_code", "scan_code"),
+        ("book-open-page-variant", "tool_book_mode", "book_mode"),
+    ]),
+    ("convert", [
+        ("merge", "tool_merge_pdf", "merge_pdf"),
+        ("image-outline", "tool_image_to_pdf", "image_to_pdf"),
+        ("file-document-edit-outline", "tool_text_to_pdf", "text_to_pdf"),
+        ("file-word-outline", "tool_to_word", "to_word"),
+        ("file-word-box-outline", "tool_pdf_to_word", "pdf_to_word"),
+        ("microsoft-excel", "tool_to_excel", "to_excel"),
+        ("image-multiple-outline", "tool_pdf_images", "pdf_to_images"),
+        ("image-size-select-large", "tool_pdf_long", "pdf_long_image"),
+    ]),
+    ("edit", [
+        ("crop-free", "tool_opencv_crop", "opencv_crop"), ("auto-fix", "tool_bg_remove", "bg_remover"),
+        ("crop", "tool_resize", "image_resizer"), ("eraser", "tool_smart_erase", "smart_erase"),
+        ("call-split", "tool_split_pdf", "split_pdf"), ("draw-pen", "tool_sign", "sign"),
+        ("watermark", "tool_watermark", "watermark"), ("file-export-outline", "tool_extract_pages", "extract_pages"),
+        ("swap-vertical", "tool_reorder_pages", "reorder_pages"), ("rotate-right", "tool_rotate_pdf", "rotate_pdf"),
+        ("lock-outline", "tool_lock", "lock_pdf"), ("lock-open-variant-outline", "tool_unlock", "unlock_pdf"),
+        ("file-remove-outline", "tool_remove_pages", "remove_pages"), ("file-plus-outline", "tool_insert_pages", "insert_pages"),
+        ("format-list-numbered", "tool_page_numbers", "page_numbers"), ("page-layout-header-footer", "tool_header_footer", "header_footer"),
+        ("file-cog-outline", "tool_metadata", "pdf_metadata"), ("layers-triple-outline", "tool_flatten", "flatten_pdf"),
+        ("arrow-collapse-vertical", "tool_compress", "compress_pdf"),
+    ]),
+    ("utilities", [
+        ("head-cog-outline", "tool_ai_chat", "ai_chat"), ("printer-outline", "tool_print", "print"),
+        ("qrcode", "tool_create_qr", "create_qr"),
+    ]),
 ]
+
 
 
 class ToolTile(MDBoxLayout):
@@ -102,6 +97,8 @@ class ToolTile(MDBoxLayout):
             pos_hint={"center_x": 0.5, "center_y": 0.5},
             on_release=lambda *_: controller.open_tool(key, title.replace("\n", " ")),
         )
+        label_widget(button, title.replace("\n", " "), "button")
+        ensure_touch_target(button)
         icon_wrap.add_widget(button)
         self.add_widget(icon_wrap)
 
@@ -120,6 +117,8 @@ class ToolTile(MDBoxLayout):
 class ToolsScreen(MDScreen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        app = MDApp.get_running_app()
+        self.language = app.prefs.get("app_language") if getattr(app, "prefs", None) else "en"
 
         root = MDBoxLayout(
             orientation="vertical",
@@ -127,7 +126,7 @@ class ToolsScreen(MDScreen):
         )
 
         toolbar = MDTopAppBar(
-            title="Tools",
+            title=tr("tools", self.language, "Tools"),
             elevation=0,
             md_bg_color=(0.97, 0.98, 1, 1),
             specific_text_color=(0.05, 0.09, 0.17, 1),
@@ -143,7 +142,8 @@ class ToolsScreen(MDScreen):
             height=dp(52),
             padding=(dp(8), 0),
         )
-        for index, (title, _) in enumerate(TOOL_SECTIONS):
+        for index, (section_key, _) in enumerate(TOOL_SECTIONS):
+            title = tr(section_key, self.language, section_key.title())
             tab_row.add_widget(
                 MDFlatButton(
                     text=title,
@@ -164,7 +164,8 @@ class ToolsScreen(MDScreen):
         )
 
         accent_index = 0
-        for section_title, tools in TOOL_SECTIONS:
+        for section_key, tools in TOOL_SECTIONS:
+            section_title = tr(section_key, self.language, section_key.title())
             content.add_widget(
                 MDLabel(
                     text=section_title,
@@ -185,7 +186,8 @@ class ToolsScreen(MDScreen):
             rows = (len(tools) + 3) // 4
             grid.height = rows * dp(126)
 
-            for icon, title, key in tools:
+            for icon, title_key, key in tools:
+                title = tr(title_key, self.language, title_key)
                 accent = ACCENTS[accent_index % len(ACCENTS)]
                 accent_index += 1
                 grid.add_widget(
@@ -212,23 +214,56 @@ class ToolsScreen(MDScreen):
     def open_tool(self, key, title):
         app = MDApp.get_running_app()
 
-        if key == "id_cards":
+        if key in ("id_cards", "book_mode"):
             app.active_session_pages = []
             app.latest_capture_path = None
             app.latest_raw_path = None
             app.editing_document_id = None
 
             scanner = app.screen_manager.get_screen("scanner")
-            scanner.scan_type = "id_card"
-            scanner.capture_mode = "batch"
+            if key == "id_cards":
+                scanner.scan_type = "id_card"
+                scanner.capture_mode = "batch"
+            else:
+                scanner.scan_type = "book"
+                scanner.capture_mode = "single"
             app.go_to("scanner")
             return
 
         workflow_screens = {
+            "nid_intelligence": "nid_intelligence_tool",
+            "passport_mrz": "passport_mrz_tool",
             "extract_text": "extract_text_tool",
             "passport_photo": "passport_photo_tool",
             "photo_translation": "photo_translation_tool",
             "scan_code": "scan_code_tool",
+            "merge_pdf": "merge_pdf_tool",
+            "image_to_pdf": "image_to_pdf_tool",
+            "text_to_pdf": "text_to_pdf_tool",
+            "to_word": "to_word_tool",
+            "pdf_to_word": "pdf_to_word_tool",
+            "to_excel": "to_excel_tool",
+            "pdf_to_images": "pdf_to_images_tool",
+            "pdf_long_image": "pdf_long_image_tool",
+            "bg_remover": "bg_remover_tool",
+            "image_resizer": "image_resizer_tool",
+            "smart_erase": "smart_erase_tool",
+            "split_pdf": "split_pdf_tool",
+            "sign": "sign_tool",
+            "watermark": "watermark_tool",
+            "extract_pages": "extract_pages_tool",
+            "reorder_pages": "reorder_pages_tool",
+            "rotate_pdf": "rotate_pdf_tool",
+            "lock_pdf": "lock_pdf_tool",
+            "unlock_pdf": "unlock_pdf_tool",
+            "remove_pages": "remove_pages_tool",
+            "insert_pages": "insert_pages_tool",
+            "page_numbers": "page_numbers_tool",
+            "header_footer": "header_footer_tool",
+            "pdf_metadata": "pdf_metadata_tool",
+            "flatten_pdf": "flatten_pdf_tool",
+            "compress_pdf": "compress_pdf_tool",
+            "create_qr": "create_qr_tool",
         }
 
         if key in workflow_screens:
@@ -246,14 +281,51 @@ class ToolsScreen(MDScreen):
                 )
             return
 
-        self._info(
-            title,
-            f"{title} is available in the Tools dashboard. "
-            "Its processing workflow is not connected yet.",
-        )
+        if key == "ai_chat":
+            app.go_to("ai_chat")
+            return
+        if key == "print":
+            app.go_to("print_tool")
+            return
+        self._info(title, f"{title} is not available in this build yet.")
 
     def _show_search_message(self):
-        self._info("Search tools", "Tool search can be added after the tool workflows are connected.")
+        field = MDTextField(hint_text=tr("tool_search_hint", self.language, "Type a tool name"), mode="rectangle")
+        results = MDBoxLayout(orientation="vertical", adaptive_height=True, spacing=dp(2))
+        wrapper = MDBoxLayout(orientation="vertical", adaptive_height=True, spacing=dp(8))
+        wrapper.add_widget(field)
+        wrapper.add_widget(results)
+
+        def rebuild(*_):
+            results.clear_widgets()
+            query = field.text.strip().lower()
+            matches = []
+            for section_key, tools in TOOL_SECTIONS:
+                section = tr(section_key, self.language, section_key.title())
+                for icon, title_key, key in tools:
+                    title = tr(title_key, self.language, title_key)
+                    plain = title.replace("\n", " ")
+                    if not query or query in plain.lower() or query in section.lower():
+                        matches.append((plain, key))
+            for title, key in matches[:12]:
+                results.add_widget(MDFlatButton(
+                    text=title,
+                    size_hint_y=None,
+                    height=dp(42),
+                    on_release=lambda _, k=key, t=title: (dialog.dismiss(), self.open_tool(k, t)),
+                ))
+            if not matches:
+                results.add_widget(MDLabel(text="কোনো মিল পাওয়া যায়নি" if self.language == "bn" else "No matching tools", halign="center", size_hint_y=None, height=dp(42)))
+
+        dialog = MDDialog(
+            title=tr("search_tools", self.language, "Search tools"),
+            type="custom",
+            content_cls=wrapper,
+            buttons=[MDFlatButton(text=tr("close", self.language, "CLOSE"), on_release=lambda *_: dialog.dismiss())],
+        )
+        field.bind(text=rebuild)
+        rebuild()
+        dialog.open()
 
     @staticmethod
     def _info(title, text):

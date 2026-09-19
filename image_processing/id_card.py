@@ -260,17 +260,32 @@ def combine_id_card_images(
         + slot_height // 2
     )
 
-    _paste_centered(
+    front_box = _paste_centered(
         page,
         front,
         front_center_y,
     )
 
-    _paste_centered(
+    back_box = _paste_centered(
         page,
         back,
         back_center_y,
     )
+
+    # Clear FRONT/BACK labels make the exported A4 page print-ready.
+    for label, box in (("FRONT", front_box), ("BACK", back_box)):
+        x0, y0, x1, y1 = box
+        label_y = max(52, y0 - 34)
+        cv2.putText(
+            page,
+            label,
+            (x0, label_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.72,
+            (70, 70, 70),
+            2,
+            cv2.LINE_AA,
+        )
 
     return page
 

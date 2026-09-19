@@ -37,6 +37,10 @@
     rotate_left_btn: rotate_left_btn
     crop_btn: crop_btn
     extract_text_btn: extract_text_btn
+    adjust_btn: adjust_btn
+    annotate_btn: annotate_btn
+    undo_btn: undo_btn
+    redo_btn: redo_btn
     confirm_btn: confirm_btn
 
     MDBoxLayout:
@@ -294,6 +298,25 @@
                 spacing: dp(2)
 
                 MDIconButton:
+                    id: adjust_btn
+                    icon: "tune-variant"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+                    pos_hint: {"center_x": 0.5}
+                    on_release: root.open_adjustments()
+
+                MDLabel:
+                    text: "Adjust"
+                    halign: "center"
+                    font_style: "Caption"
+                    theme_text_color: "Custom"
+                    text_color: 0.85, 0.85, 0.85, 1
+
+            MDBoxLayout:
+                orientation: "vertical"
+                spacing: dp(2)
+
+                MDIconButton:
                     id: extract_text_btn
                     icon: "text-recognition"
                     theme_text_color: "Custom"
@@ -308,9 +331,38 @@
                     theme_text_color: "Custom"
                     text_color: 0.85, 0.85, 0.85, 1
 
-            Widget:
-                size_hint_x: None
-                width: dp(8)
+            MDBoxLayout:
+                orientation: "vertical"
+                spacing: dp(2)
+
+                MDIconButton:
+                    id: annotate_btn
+                    icon: "draw"
+                    theme_text_color: "Custom"
+                    text_color: 1, 1, 1, 1
+                    pos_hint: {"center_x": 0.5}
+                    on_release: root.open_annotation()
+
+                MDLabel:
+                    text: "Annotate"
+                    halign: "center"
+                    font_style: "Caption"
+                    theme_text_color: "Custom"
+                    text_color: 0.85, 0.85, 0.85, 1
+
+            MDIconButton:
+                id: undo_btn
+                icon: "undo-variant"
+                theme_text_color: "Custom"
+                text_color: 1, 1, 1, 1
+                on_release: root.undo_edit()
+
+            MDIconButton:
+                id: redo_btn
+                icon: "redo-variant"
+                theme_text_color: "Custom"
+                text_color: 1, 1, 1, 1
+                on_release: root.redo_edit()
 
             MDIconButton:
                 id: confirm_btn

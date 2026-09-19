@@ -23,12 +23,44 @@
 
                 MDTextField:
                     id: search_field
-                    hint_text: "Search documents"
+                    hint_text: root.search_hint
                     mode: "rectangle"
                     icon_right: "magnify"
                     size_hint_y: None
                     height: dp(56)
                     on_text: root.refresh_documents(self.text.strip() or None)
+
+            ScrollView:
+                size_hint_y: None
+                height: dp(48)
+                do_scroll_y: False
+                do_scroll_x: True
+                bar_width: 0
+
+                MDBoxLayout:
+                    orientation: "horizontal"
+                    adaptive_width: True
+                    padding: dp(12), 0
+                    spacing: dp(2)
+
+                    MDFlatButton:
+                        text: root.all_text
+                        on_release: root.show_all()
+                    MDFlatButton:
+                        text: root.favorites_text
+                        on_release: root.show_favorites()
+                    MDFlatButton:
+                        text: root.folders_text
+                        on_release: root.show_folder_dialog()
+                    MDFlatButton:
+                        text: root.trash_text
+                        on_release: root.show_trash()
+                    MDFlatButton:
+                        text: root.filter_text
+                        on_release: root.show_filter_dialog()
+                    MDFlatButton:
+                        text: root.bulk_text
+                        on_release: root.show_bulk_actions()
 
             MDBoxLayout:
                 orientation: "vertical"
@@ -76,7 +108,7 @@
                                 valign: "middle"
 
                         MDLabel:
-                            text: "No documents yet"
+                            text: root.empty_title
                             halign: "center"
                             theme_text_color: "Hint"
                             font_style: "H6"
@@ -84,7 +116,7 @@
                             height: self.texture_size[1]
 
                         MDLabel:
-                            text: "Scanned documents will show up here"
+                            text: root.empty_subtitle
                             halign: "center"
                             theme_text_color: "Hint"
                             font_style: "Caption"

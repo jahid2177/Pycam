@@ -337,3 +337,50 @@ def clamp_quad(
         )
         for x, y in quad
     ]
+
+
+def quad_area(quad: Sequence[Point]) -> float:
+    """Return absolute polygon area for a 4-point crop quad."""
+    if len(quad) != 4:
+        return 0.0
+    area = 0.0
+    for i in range(4):
+        x1, y1 = quad[i]
+        x2, y2 = quad[(i + 1) % 4]
+        area += x1 * y2 - x2 * y1
+    return abs(area) * 0.5
+
+
+def is_valid_crop_quad(
+    quad: Sequence[Point],
+    image_size: Tuple[float, float],
+    min_area_ratio: float = 0.01,
+    min_side_ratio: float = 0.025,
+) -> bool:
+    """Conservative validation used before perspective crop."""
+    if len(quad) != 4:
+        return False
+    width, height = image_size
+    if width <= 0 or height <= 0:
+        return False
+    ordered = _order_quad(quad)
+    area = quad_area(ordered)
+    if area < width * height * min_area_ratio:
+        return False
+    import math
+    min_side = min(width, height) * min_side_ratio
+    for i in range(4):
+        x1, y1 = ordered[i]
+        x2, y2 = ordered[(i + 1) % 4]
+        if math.hypot(x2 - x1, y2 - y1) < min_side:
+            return False
+    # Opposite winding/crossing quads produce inconsistent cross signs.
+    signs = []
+    for i in range(4):
+        ax, ay = ordered[i]
+        bx, by = ordered[(i + 1) % 4]
+        cx, cy = ordered[(i + 2) % 4]
+        cross = (bx - ax) * (cy - by) - (by - ay) * (cx - bx)
+        if abs(cross) > 1e-6:
+            signs.append(cross > 0)
+    return bool(signs) and all(v == signs[0] for v in signs)

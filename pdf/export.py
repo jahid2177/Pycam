@@ -57,6 +57,44 @@ QUALITY_PRESETS = {
 }
 
 
+
+_SEARCH_FONT_CACHE = None
+
+
+def _search_text_font(text: str) -> str:
+    """Best-effort Unicode font for invisible searchable PDF text layers."""
+    global _SEARCH_FONT_CACHE
+    if _SEARCH_FONT_CACHE:
+        return _SEARCH_FONT_CACHE
+
+    # Plain Latin text is safest and smallest with a built-in PDF font.
+    if not any(ord(ch) > 255 for ch in (text or '')):
+        _SEARCH_FONT_CACHE = 'Helvetica'
+        return _SEARCH_FONT_CACHE
+
+    candidates = [
+        '/system/fonts/NotoSansBengali-Regular.ttf',
+        '/system/fonts/NotoSansBengaliUI-Regular.ttf',
+        '/system/fonts/NotoSans-Regular.ttf',
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    ]
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        for path in candidates:
+            if os.path.isfile(path):
+                try:
+                    pdfmetrics.registerFont(TTFont('PycamSearchUnicode', path))
+                    _SEARCH_FONT_CACHE = 'PycamSearchUnicode'
+                    return _SEARCH_FONT_CACHE
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    _SEARCH_FONT_CACHE = 'Helvetica'
+    return _SEARCH_FONT_CACHE
+
 def _quality_preset(name: str):
     return QUALITY_PRESETS.get(
         (name or "balanced").lower(),
@@ -221,6 +259,8 @@ def export_to_pdf(
     orientation: str = "auto",
     margin_pt: float = 0.0,
     quality: str = "balanced",
+    searchable: bool = False,
+    ocr_language: str = "english",
 ) -> str:
     """
     Export ordered page images into one PDF.
@@ -248,6 +288,13 @@ def export_to_pdf(
 
     try:
         for path in page_paths:
+            searchable_text = ""
+            if searchable:
+                try:
+                    from ocr.ocr_manager import run_ocr_for_pages, clean_ocr_text
+                    searchable_text = clean_ocr_text(run_ocr_for_pages([path], ocr_language))
+                except Exception:
+                    searchable_text = ""
             (
                 image_reader,
                 width_px,
@@ -319,6 +366,38 @@ def export_to_pdf(
                 anchor="c",
             )
 
+            # Searchable PDF: add an invisible OCR text layer.  We do not
+            # have word-level bounding boxes from every OCR backend, so this
+            # layer is intentionally non-visual but still searchable/selectable.
+            if searchable_text:
+                try:
+                    text_obj = pdf_canvas.beginText()
+                    top_y = max(margin_pt + 8.0, pdf_page_h - max(margin_pt, 4.0) - 10.0)
+                    text_obj.setTextOrigin(max(margin_pt, 4.0), top_y)
+                    font_name = _search_text_font(searchable_text)
+                    text_obj.setFont(font_name, 7)
+                    text_obj.setLeading(8.5)
+                    if hasattr(text_obj, "setTextRenderMode"):
+                        text_obj.setTextRenderMode(3)  # invisible
+                    for raw_line in searchable_text.splitlines():
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        # Keep very long OCR lines bounded; ReportLab textLine
+                        # handles the reading order while the layer stays hidden.
+                        for start in range(0, len(line), 180):
+                            chunk = line[start:start + 180]
+                            try:
+                                text_obj.textLine(chunk)
+                            except Exception:
+                                # Built-in Helvetica cannot encode every script.
+                                # If no Unicode system font is present, skip only
+                                # the unencodable chunk rather than failing export.
+                                continue
+                    pdf_canvas.drawText(text_obj)
+                except Exception:
+                    pass
+
             # Keep buffer alive through drawImage/showPage.
             _ = backing_buffer
 
@@ -384,6 +463,8 @@ def export_to_image(
     output_path: str,
     fmt: str = "jpg",
     quality: str = "balanced",
+    searchable: bool = False,
+    ocr_language: str = "english",
 ) -> str:
     if not page_paths:
         raise ValueError(
@@ -405,6 +486,8 @@ def export_to_images_zip(
     output_zip_path: str,
     fmt: str = "jpg",
     quality: str = "balanced",
+    searchable: bool = False,
+    ocr_language: str = "english",
 ) -> str:
     if not page_paths:
         raise ValueError(

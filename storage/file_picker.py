@@ -27,6 +27,9 @@ class FilePicker:
     def choose_pdf(self, callback, error_callback=None):
         self._choose("application/pdf", callback, error_callback)
 
+    def choose_zip(self, callback, error_callback=None):
+        self._choose("application/zip", callback, error_callback)
+
     def _choose(self, mime, callback, error_callback):
         self._callback = callback
         self._error_callback = error_callback
@@ -209,7 +212,7 @@ def _media_content_resolver():
     return activity.getContentResolver()
 
 
-def list_media_images(limit=400):
+def list_media_images(limit=400, album=None, search=None):
     """
     Return recent device photos as a list of dicts:
         {"id": <MediaStore row id, str>, "date_added": <int, unix seconds>}
@@ -229,7 +232,7 @@ def list_media_images(limit=400):
         # pyjnius converts a plain Python list into the Java String[]
         # this query() overload expects - no manual array construction
         # needed (and autoclass("java.lang.String[]") is not valid).
-        projection = ["_id", "date_added"]
+        projection = ["_id", "date_added", "display_name", "bucket_display_name", "relative_path"]
 
         resolver = _media_content_resolver()
         cursor = resolver.query(
@@ -247,20 +250,45 @@ def list_media_images(limit=400):
         try:
             id_index = cursor.getColumnIndexOrThrow("_id")
             date_index = cursor.getColumnIndexOrThrow("date_added")
+            name_index = cursor.getColumnIndex("display_name")
+            bucket_index = cursor.getColumnIndex("bucket_display_name")
+            path_index = cursor.getColumnIndex("relative_path")
 
             while cursor.moveToNext() and len(results) < limit:
-                results.append(
-                    {
-                        "id": str(cursor.getLong(id_index)),
-                        "date_added": int(cursor.getLong(date_index)),
-                    }
-                )
+                name = cursor.getString(name_index) if name_index >= 0 else ""
+                bucket = cursor.getString(bucket_index) if bucket_index >= 0 else ""
+                relpath = cursor.getString(path_index) if path_index >= 0 else ""
+                item = {
+                    "id": str(cursor.getLong(id_index)),
+                    "date_added": int(cursor.getLong(date_index)),
+                    "display_name": name or "",
+                    "bucket_name": bucket or "Other",
+                    "relative_path": relpath or "",
+                }
+                if album and album != "Recent Photos" and item["bucket_name"] != album:
+                    continue
+                if search and search.lower() not in item["display_name"].lower():
+                    continue
+                results.append(item)
         finally:
             cursor.close()
 
         return results
     except Exception:
         return []
+
+
+def list_media_albums(limit=1200):
+    """Return available MediaStore album/bucket names, newest-oriented."""
+    names = []
+    seen = set()
+    for item in list_media_images(limit=limit):
+        name = item.get("bucket_name") or "Other"
+        key = name.lower()
+        if key not in seen:
+            seen.add(key)
+            names.append(name)
+    return names
 
 
 def get_or_create_thumbnail(media_id, cache_dir, size_px=300):

@@ -1,22 +1,49 @@
-"""
-App preferences - a small JSON file in app storage, not a database
-table (these are simple key/value settings, not records with an id/
-created_at/updated_at shape the way documents are).
-
-Every screen that reads a preference should fall back to DEFAULTS
-rather than assume a key exists - preferences.json may be from an
-older version of the app that didn't have a given setting yet.
-"""
+"""Persistent application preferences for Pycam."""
 
 import json
 import os
 import threading
 
 DEFAULTS = {
-    "auto_capture": True,       # ScannerScreen's default for a new session
-    "export_format": "pdf",     # pre-selected choice in the Export dialog: pdf | jpg | png
-    "ocr_language": "english",  # pre-selected choice in the Run OCR dialog: english | bengali
-    "theme_style": "Light",     # app.theme_cls.theme_style: Light | Dark
+    "auto_capture": True,
+    "auto_crop": True,
+    "edge_sensitivity": "balanced",   # low | balanced | high
+    "capture_delay": "normal",        # fast | normal | slow
+    "flash_default": False,
+    "high_resolution": True,
+    "auto_enhance": True,
+    "shutter_sound": True,
+    "vibration": True,
+    "grid_overlay": False,
+    "camera_facing": "back",
+    "export_format": "pdf",
+    "pdf_page_size": "a4",           # auto | a4 | letter | legal
+    "pdf_margin": "normal",           # none | small | normal | large
+    "export_quality": "balanced",     # high | balanced | small
+    "export_destination": "app",    # app | downloads | custom
+    "export_tree_uri": "",
+    "export_tree_label": "",
+    "searchable_pdf": False,
+    "ocr_language": "english",
+    "auto_ocr": False,
+    "keep_ocr_text": True,
+    "theme_style": "Light",
+    "app_language": "en",
+    "analytics_enabled": False,
+    "auto_temp_cleanup": True,
+    "qr_history": [],
+    "filename_template": "Scan_{date}_{time}",
+    "app_lock_enabled": False,
+    "app_lock_timeout": "immediate",  # immediate | 1min | 5min | 15min
+    "biometric_unlock": False,
+    "pin_salt": "",
+    "pin_hash": "",
+    "block_screenshots": True,
+    "trash_retention": "30",       # never | 7 | 30 | 90 days
+    "ai_base_url": "",
+    "ai_model": "",
+    "app_schema_version": 0,
+    "last_seen_version": "",
 }
 
 
@@ -36,14 +63,17 @@ class AppPreferences:
             if isinstance(saved, dict):
                 self._values.update(saved)
         except (json.JSONDecodeError, OSError):
-            pass  # corrupt/unreadable prefs file - fall back to defaults rather than crash
+            pass
 
     def _save(self):
         try:
-            with open(self._path, "w", encoding="utf-8") as f:
-                json.dump(self._values, f)
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            temp = self._path + ".tmp"
+            with open(temp, "w", encoding="utf-8") as f:
+                json.dump(self._values, f, ensure_ascii=False, indent=2)
+            os.replace(temp, self._path)
         except OSError:
-            pass  # best-effort - a failed write shouldn't crash whatever screen changed a setting
+            pass
 
     def get(self, key: str):
         return self._values.get(key, DEFAULTS.get(key))
@@ -51,4 +81,9 @@ class AppPreferences:
     def set(self, key: str, value):
         with self._lock:
             self._values[key] = value
+            self._save()
+
+    def reset(self):
+        with self._lock:
+            self._values = dict(DEFAULTS)
             self._save()

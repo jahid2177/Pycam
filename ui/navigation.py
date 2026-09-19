@@ -11,6 +11,7 @@ from kivy.uix.behaviors import ButtonBehavior
 from kivymd.app import MDApp
 from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.label import MDIcon, MDLabel
+from storage.accessibility import label_widget, ensure_touch_target
 
 ACTIVE = (0.05, 0.52, 0.46, 1)
 INACTIVE = (0.38, 0.45, 0.54, 1)
@@ -28,7 +29,7 @@ SHADOW_BANDS = (
 )
 BAND_HEIGHT = dp(2)
 SHADOW_HEIGHT = BAND_HEIGHT * len(SHADOW_BANDS)
-BAR_HEIGHT = dp(82)
+BAR_HEIGHT = dp(88)
 
 
 class _ElevationShadow(MDBoxLayout):
@@ -89,6 +90,8 @@ class BottomNavItem(ButtonBehavior, MDBoxLayout):
 
         self.add_widget(self._icon)
         self.add_widget(self._label)
+        label_widget(self, self.label, "navigation")
+        ensure_touch_target(self)
 
         self.bind(
             icon=self._sync,
@@ -105,6 +108,7 @@ class BottomNavItem(ButtonBehavior, MDBoxLayout):
         self._icon.icon = self.icon
         self._icon.text_color = color
         self._label.text = self.label
+        label_widget(self, self.label, "navigation")
         self._label.text_color = color
 
     def on_release(self):
@@ -146,11 +150,19 @@ class BottomNavigationBar(MDBoxLayout):
             md_bg_color=BAR_BG,
         )
 
+        app = MDApp.get_running_app()
+        try:
+            from storage.localization import tr
+            language = app.prefs.get("app_language") if getattr(app, "prefs", None) else "en"
+        except Exception:
+            tr = lambda key, language="en", default=None: default or key
+            language = "en"
+
         items = (
-            ("home-variant-outline", "Home", "home"),
-            ("folder-outline", "Files", "documents"),
-            ("view-grid-outline", "Tools", "tools"),
-            ("cog-outline", "Settings", "settings"),
+            ("home-variant-outline", tr("home", language, "Home"), "home"),
+            ("folder-outline", tr("files", language, "Files"), "documents"),
+            ("view-grid-outline", tr("tools", language, "Tools"), "tools"),
+            ("cog-outline", tr("settings", language, "Settings"), "settings"),
         )
 
         for icon, label, target in items:

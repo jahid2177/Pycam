@@ -40,6 +40,7 @@ from kivymd.uix.button import (
     MDRaisedButton,
 )
 from kivymd.uix.screen import MDScreen
+from kivymd.uix.snackbar import Snackbar
 from kivymd.uix.toolbar import MDTopAppBar
 
 from image_processing.perspective import (
@@ -52,6 +53,7 @@ from scanner.detector import (
 from ui.crop_geometry import (
     clamp_quad,
     image_to_widget,
+    is_valid_crop_quad,
     rotate_quad_90,
     widget_to_image,
 )
@@ -75,6 +77,8 @@ HANDLE_FILL = (
 
 MAGNIFIER_SIZE = dp(116)
 MAGNIFIER_SOURCE_RADIUS_PX = 55
+SNAP_RADIUS_PX = 28
+SNAP_MIN_STRENGTH = 42
 
 
 def _distance(a, b):
@@ -104,12 +108,17 @@ class CropOverlay(RelativeLayout):
         super().__init__(**kwargs)
 
         self.image_path = image_path
+        self._snap_edge_map = None
+        self._snap_edge_shape = None
         self.image_quad = [
             tuple(p)
             for p in initial_quad
         ]
 
         self._dragging_index = None
+        self.snap_enabled = True
+        self._snap_edge_map = None
+        self._snap_edge_shape = None
 
         self.bg_image = Image(
             source=image_path,
@@ -511,6 +520,63 @@ class CropOverlay(RelativeLayout):
         ]
 
     # ------------------------------------------------------------------
+    # Edge snapping
+    # ------------------------------------------------------------------
+
+    def set_snap_enabled(self, enabled):
+        self.snap_enabled = bool(enabled)
+
+    def _ensure_snap_edge_map(self):
+        image = cv2.imread(self.image_path, cv2.IMREAD_GRAYSCALE)
+        if image is None:
+            self._snap_edge_map = None
+            self._snap_edge_shape = None
+            return
+        shape = image.shape[:2]
+        if self._snap_edge_map is not None and self._snap_edge_shape == shape:
+            return
+        # CLAHE + light blur makes low-contrast paper borders easier to snap to.
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        normalized = clahe.apply(image)
+        blurred = cv2.GaussianBlur(normalized, (5, 5), 0)
+        gx = cv2.Sobel(blurred, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(blurred, cv2.CV_32F, 0, 1, ksize=3)
+        magnitude = cv2.magnitude(gx, gy)
+        magnitude = cv2.normalize(magnitude, None, 0, 255, cv2.NORM_MINMAX)
+        self._snap_edge_map = magnitude.astype(np.uint8)
+        self._snap_edge_shape = shape
+
+    def _snap_image_point(self, point):
+        if not self.snap_enabled:
+            return point
+        self._ensure_snap_edge_map()
+        edge = self._snap_edge_map
+        if edge is None:
+            return point
+        h, w = edge.shape[:2]
+        x = int(round(min(max(point[0], 0), max(0, w - 1))))
+        y = int(round(min(max(point[1], 0), max(0, h - 1))))
+        radius = max(8, int(min(SNAP_RADIUS_PX, min(w, h) * 0.035)))
+        x0, x1 = max(0, x - radius), min(w, x + radius + 1)
+        y0, y1 = max(0, y - radius), min(h, y + radius + 1)
+        patch = edge[y0:y1, x0:x1]
+        if patch.size == 0:
+            return point
+        yy, xx = np.indices(patch.shape)
+        px = xx + x0
+        py = yy + y0
+        dist = np.sqrt((px - x) ** 2 + (py - y) ** 2)
+        # Prefer a strong nearby edge over a slightly stronger far-away edge.
+        score = patch.astype(np.float32) - dist.astype(np.float32) * 2.4
+        iy, ix = np.unravel_index(int(np.argmax(score)), score.shape)
+        strength = int(patch[iy, ix])
+        if strength < SNAP_MIN_STRENGTH:
+            return point
+        sx = float(ix + x0)
+        sy = float(iy + y0)
+        return (sx, sy)
+
+    # ------------------------------------------------------------------
     # Touch handling
     # ------------------------------------------------------------------
 
@@ -598,8 +664,9 @@ class CropOverlay(RelativeLayout):
             )
 
             # Keep every point explicitly inside current image bounds.
+            snapped = self._snap_image_point(image_point)
             clamped = clamp_quad(
-                [image_point] * 4,
+                [snapped] * 4,
                 image_size,
             )[0]
 
@@ -747,6 +814,14 @@ class CropScreen(MDScreen):
             )
         )
 
+        self.snap_button = MDFlatButton(
+            text="SNAP: ON",
+            theme_text_color="Custom",
+            text_color=(1, 1, 1, 1),
+            on_release=lambda *args: self.toggle_snap(),
+        )
+        controls.add_widget(self.snap_button)
+
         controls.add_widget(
             Widget()
         )
@@ -887,6 +962,14 @@ class CropScreen(MDScreen):
             )
         )
 
+    def toggle_snap(self):
+        if not self.overlay:
+            return
+        enabled = not bool(self.overlay.snap_enabled)
+        self.overlay.set_snap_enabled(enabled)
+        self.snap_button.text = "SNAP: ON" if enabled else "SNAP: OFF"
+        Snackbar(text=("Edge snap enabled" if enabled else "Edge snap disabled")).open()
+
     # ------------------------------------------------------------------
     # Rotate while preserving manual quad
     # ------------------------------------------------------------------
@@ -1005,6 +1088,10 @@ class CropScreen(MDScreen):
         quad = (
             self.overlay.get_result_quad()
         )
+        image_size = self.overlay._get_image_size()
+        if not is_valid_crop_quad(quad, image_size):
+            Snackbar(text="Invalid crop shape. Move the corners farther apart.").open()
+            return
 
         threading.Thread(
             target=self._process_crop,
@@ -1106,6 +1193,10 @@ class CropScreen(MDScreen):
         app.latest_capture_path = (
             output_path
         )
+        try:
+            app.schedule_session_autosave("manual_crop")
+        except Exception:
+            pass
 
         # The manually cropped result becomes the new working page. We do not
         # overwrite latest_raw_path; users can still reopen Adjust from the

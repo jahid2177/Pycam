@@ -91,6 +91,14 @@
                 disabled_color: 0.5, 0.5, 0.5, 1
                 on_release: root.import_selected()
 
+        MDTextField:
+            hint_text: "Search photos"
+            mode: "rectangle"
+            icon_right: "magnify"
+            size_hint_y: None
+            height: dp(52)
+            on_text: root.set_search(self.text)
+
         RecycleView:
             id: photo_grid
             viewclass: "PhotoCell"

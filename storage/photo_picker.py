@@ -44,6 +44,7 @@ from storage.file_picker import (
     copy_media_image,
     get_or_create_thumbnail,
     list_media_images,
+    list_media_albums,
 )
 
 THUMB_SIZE_PX = 300
@@ -60,6 +61,9 @@ class PhotoPickerScreen(MDScreen):
         self._id_to_index = {}
         self._album_menu = None
         self._loading = False
+        self._album = "Recent Photos"
+        self._search = ""
+        self._load_generation = 0
         self._cancel_requested = False
 
     # ---- Lifecycle -----------------------------------------------------
@@ -117,14 +121,18 @@ class PhotoPickerScreen(MDScreen):
             self._start_loading()
 
     def _start_loading(self):
-        if self._loading:
-            return
+        self._load_generation += 1
+        generation = self._load_generation
         self._loading = True
+        self._selected_ids = set()
+        self._id_to_index = {}
+        self.photo_grid.data = []
+        self._update_import_button()
         self._set_status("Loading photos...")
-        threading.Thread(target=self._load_images_thread, daemon=True).start()
+        threading.Thread(target=self._load_images_thread, args=(generation,), daemon=True).start()
 
-    def _load_images_thread(self):
-        images = list_media_images(limit=MAX_PHOTOS)
+    def _load_images_thread(self, generation):
+        images = list_media_images(limit=MAX_PHOTOS, album=self._album, search=self._search)
 
         app = MDApp.get_running_app()
         cache_dir = app.storage.get_temp_path("thumb_cache")
@@ -133,7 +141,7 @@ class PhotoPickerScreen(MDScreen):
 
         batch = []
         for item in images:
-            if self._cancel_requested:
+            if self._cancel_requested or generation != self._load_generation:
                 return
 
             thumb_path = get_or_create_thumbnail(
@@ -164,7 +172,7 @@ class PhotoPickerScreen(MDScreen):
                 lambda dt, rows=to_append: self._append_rows(rows), 0
             )
 
-        Clock.schedule_once(lambda dt: self._on_load_finished(len(images)), 0)
+        Clock.schedule_once(lambda dt: self._on_load_finished(len(images), generation), 0)
 
     def _append_rows(self, rows):
         if self._cancel_requested:
@@ -175,7 +183,9 @@ class PhotoPickerScreen(MDScreen):
             self._id_to_index[row["media_id"]] = start + offset
         self.photo_grid.data = data + rows
 
-    def _on_load_finished(self, total_found):
+    def _on_load_finished(self, total_found, generation):
+        if generation != self._load_generation:
+            return
         self._loading = False
         if not self.photo_grid.data:
             self._set_status(
@@ -212,21 +222,43 @@ class PhotoPickerScreen(MDScreen):
         self.import_btn.text = f"Import({count})"
         self.import_btn.disabled = count == 0
 
-    # ---- Album dropdown (stub - single "Recent Photos" bucket for now) --------
+    # ---- Album dropdown + search ---------------------------------------
 
     def open_album_menu(self):
-        if self._album_menu is None:
-            self._album_menu = MDDropdownMenu(
-                caller=self.select_label,
-                items=[
-                    {
-                        "text": "Recent Photos",
-                        "on_release": lambda: self._album_menu.dismiss(),
-                    }
-                ],
-                width_mult=4,
-            )
+        albums = ["Recent Photos"] + list_media_albums()
+        items = []
+        for name in albums:
+            items.append({"text": name, "on_release": lambda n=name: self._choose_album(n)})
+        if self._album_menu:
+            try:
+                self._album_menu.dismiss()
+            except Exception:
+                pass
+        self._album_menu = MDDropdownMenu(
+            caller=self.select_label,
+            items=items,
+            width=min(320, 56 * 5),
+        )
         self._album_menu.open()
+
+    def _choose_album(self, name):
+        if self._album_menu:
+            self._album_menu.dismiss()
+        self._album = name
+        self.select_label.text = name
+        self._start_loading()
+
+    def set_search(self, text):
+        value = (text or "").strip()
+        if value == self._search:
+            return
+        self._search = value
+        Clock.unschedule(self._apply_search)
+        Clock.schedule_once(self._apply_search, 0.35)
+
+    def _apply_search(self, *_):
+        if platform == "android":
+            self._start_loading()
 
     # ---- Import -----------------------------------------------------
 

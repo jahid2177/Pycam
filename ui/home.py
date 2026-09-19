@@ -15,7 +15,7 @@ from datetime import datetime
 
 from kivy.core.window import Window
 from kivy.metrics import dp
-from kivy.properties import StringProperty, ObjectProperty
+from kivy.properties import BooleanProperty, StringProperty, ObjectProperty
 from kivy.uix.boxlayout import BoxLayout
 from kivymd.uix.screen import MDScreen
 from kivymd.uix.menu import MDDropdownMenu
@@ -24,6 +24,7 @@ from kivymd.uix.textfield import MDTextField
 from kivymd.app import MDApp
 
 from ui.navigation import BottomNavigationBar
+from storage.localization import tr
 
 
 DOCUMENT_TYPE_ICONS = {
@@ -123,7 +124,7 @@ class DocumentListItem(BoxLayout):
     doc_meta = StringProperty("")
     type_icon = StringProperty("file-document-outline")
 
-    def __init__(self, document: dict, controller, **kwargs):
+    def __init__(self, document: dict, controller, search_query: str = None, **kwargs):
         super().__init__(**kwargs)
         self.document = document
         self.controller = controller
@@ -136,15 +137,41 @@ class DocumentListItem(BoxLayout):
         page_label = "1 page" if page_count == 1 else f"{page_count} pages"
         when = _format_relative_time(document.get("updated_at", ""))
         self.doc_meta = f"{page_label} • {when}" if when else page_label
+        if document.get("protected"):
+            self.doc_meta = "🔒 " + self.doc_meta
+        query = (search_query or "").strip()
+        if query:
+            haystack = document.get("ocr_text") or ""
+            lower = haystack.lower()
+            pos = lower.find(query.lower())
+            if pos >= 0:
+                start = max(0, pos - 28)
+                end = min(len(haystack), pos + len(query) + 42)
+                snippet = " ".join(haystack[start:end].split())
+                if start > 0:
+                    snippet = "…" + snippet
+                if end < len(haystack):
+                    snippet += "…"
+                self.doc_meta = f"Match: {snippet}"
+            elif query.lower() in (document.get("name") or "").lower():
+                self.doc_meta = f"Name match • {self.doc_meta}"
         self._menu = None
 
     def open_menu(self, caller):
         items = [
+            {"text": "Remove favorite" if self.document.get("favorite") else "Add favorite", "on_release": self._favorite},
+            {"text": "Move to folder", "on_release": self._folder},
+            {"text": "Edit tags", "on_release": self._tags},
+            {"text": "Unprotect document" if self.document.get("protected") else "Protect document", "on_release": self._protect},
             {"text": "Rename", "on_release": self._rename},
+        ]
+        if hasattr(self.controller, "duplicate_document"):
+            items.append({"text": "Duplicate", "on_release": self._duplicate})
+        items.extend([
             {"text": "Export", "on_release": self._export},
             {"text": "Run OCR", "on_release": self._run_ocr},
-            {"text": "Delete", "on_release": self._delete},
-        ]
+            {"text": "Move to Trash", "on_release": self._delete},
+        ])
         # The caller is the right-edge 3-dot button.  Make the menu grow to
         # the LEFT of that caller and give it an explicit phone-safe width so
         # it can never render beyond the right edge of the display.
@@ -174,9 +201,30 @@ class DocumentListItem(BoxLayout):
             self._menu.dismiss()
             self._menu = None
 
+    def _favorite(self, *args):
+        self._dismiss_menu()
+        self.controller.toggle_favorite(self.document)
+
+    def _folder(self, *args):
+        self._dismiss_menu()
+        self.controller.prompt_folder(self.document)
+
+    def _tags(self, *args):
+        self._dismiss_menu()
+        self.controller.prompt_tags(self.document)
+
+    def _protect(self, *args):
+        self._dismiss_menu()
+        self.controller.toggle_protected(self.document)
+
     def _rename(self, *args):
         self._dismiss_menu()
         self.controller.prompt_rename(self.document)
+
+    def _duplicate(self, *args):
+        self._dismiss_menu()
+        if hasattr(self.controller, "duplicate_document"):
+            self.controller.duplicate_document(self.document)
 
     def _export(self, *args):
         self._dismiss_menu()
@@ -218,6 +266,15 @@ class HomeScreen(MDScreen):
     doc_count_label = ObjectProperty(None)
     bottom_nav_container = ObjectProperty(None)
 
+    storage_usage_text = StringProperty("Storage: 0 B")
+    search_hint = StringProperty("Search")
+    discard_text = StringProperty("DISCARD")
+    resume_button_text = StringProperty("RESUME")
+    empty_title = StringProperty("No documents yet")
+    empty_subtitle = StringProperty("Tap the camera button to scan your first page")
+    resume_text = StringProperty("")
+    has_draft = BooleanProperty(False)
+
     RECENT_LIMIT = 8
 
     def on_kv_post(self, base_widget):
@@ -225,14 +282,52 @@ class HomeScreen(MDScreen):
             self.bottom_nav_container.add_widget(BottomNavigationBar(selected="home"))
 
     def on_pre_enter(self, *args):
+        self._apply_language()
         self.refresh_documents()
+        self.refresh_home_stats()
+
+    def _apply_language(self):
+        app = MDApp.get_running_app()
+        lang = app.prefs.get("app_language") if getattr(app, "prefs", None) else "en"
+        self.search_hint = tr("search", lang, "Search")
+        self.discard_text = tr("discard", lang, "DISCARD")
+        self.resume_button_text = tr("resume", lang, "RESUME")
+        self.empty_title = tr("no_documents", lang, "No documents yet")
+        self.empty_subtitle = tr("scan_first_page", lang, "Tap the camera button to scan your first page")
+
+    @staticmethod
+    def _format_bytes(value: int) -> str:
+        size = float(max(0, value or 0))
+        for unit in ("B", "KB", "MB", "GB"):
+            if size < 1024.0 or unit == "GB":
+                return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+            size /= 1024.0
+        return "0 B"
+
+    def refresh_home_stats(self):
+        app = MDApp.get_running_app()
+        try:
+            lang = app.prefs.get("app_language") if getattr(app, "prefs", None) else "en"
+            self.storage_usage_text = f"{tr("storage", lang, "Storage")}: {self._format_bytes(app.storage.get_storage_size_bytes())}"
+        except Exception:
+            self.storage_usage_text = tr("storage_unavailable", app.prefs.get("app_language"), "Storage unavailable")
+        count = len(app.active_session_pages or [])
+        self.has_draft = count > 0
+        if count:
+            lang = app.prefs.get("app_language")
+            label = tr("page", lang, "page") if count == 1 else tr("pages", lang, "pages")
+            self.resume_text = f"{tr("unfinished_scan", lang, "Unfinished scan")} • {count} {label}"
+        else:
+            self.resume_text = ""
 
     def refresh_documents(self, search_query: str = None):
         app = MDApp.get_running_app()
         documents = app.db.list_documents(search=search_query)
         total = app.db.count_documents()
 
-        self.doc_count_label.text = "1 document" if total == 1 else f"{total} documents"
+        lang = app.prefs.get("app_language") if getattr(app, "prefs", None) else "en"
+        unit = tr("document", lang, "document") if total == 1 else tr("documents", lang, "documents")
+        self.doc_count_label.text = f"{total} {unit}"
 
         self.recent_list.clear_widgets()
         # Collapse the empty state to zero height, not just fade it out: an
@@ -244,16 +339,97 @@ class HomeScreen(MDScreen):
         self.empty_state.disabled = bool(documents)
 
         for document in documents[: self.RECENT_LIMIT]:
-            item = DocumentListItem(document=document, controller=self)
+            item = DocumentListItem(document=document, controller=self, search_query=search_query)
             self.recent_list.add_widget(item)
 
     # ---- Navigation --------------------------------------------------
 
-    def start_scan(self):
+    def _prepare_new_session(self, callback):
+        app = MDApp.get_running_app()
+        if not app.active_session_pages:
+            callback()
+            return
+
+        from kivymd.uix.button import MDFlatButton
+
+        def discard(*_):
+            dialog.dismiss()
+            app.active_session_pages = []
+            app.editing_document_id = None
+            app.latest_capture_path = None
+            app.latest_raw_path = None
+            try:
+                app.clear_session_draft()
+            except Exception:
+                pass
+            self.refresh_home_stats()
+            callback()
+
+        dialog = MDDialog(
+            title="Start a new scan?",
+            text="You have an unfinished scan. Starting a new one will discard that draft.",
+            buttons=[
+                MDFlatButton(text="CANCEL", on_release=lambda *_: dialog.dismiss()),
+                MDFlatButton(text="DISCARD & START", on_release=discard),
+            ],
+        )
+        dialog.open()
+
+    def _launch_scan(self, capture_mode="single", scan_type="scan"):
         app = MDApp.get_running_app()
         app.active_session_pages = []
-        app.editing_document_id = None  # a brand-new scan, not continuing a saved one
+        app.editing_document_id = None
+        app.pending_capture_mode = capture_mode
+        app.pending_scan_type = scan_type
         app.go_to("scanner")
+
+    def start_scan(self):
+        self._prepare_new_session(lambda: self._launch_scan("single", "scan"))
+
+    def start_batch_scan(self):
+        self._prepare_new_session(lambda: self._launch_scan("batch", "scan"))
+
+    def start_id_scan(self):
+        self._prepare_new_session(lambda: self._launch_scan("batch", "id_card"))
+
+    def import_images(self):
+        def open_picker():
+            app = MDApp.get_running_app()
+            app.active_session_pages = []
+            app.editing_document_id = None
+            app.photo_picker_return_screen = "editor"
+            app.go_to("photo_picker")
+        self._prepare_new_session(open_picker)
+
+
+    def import_pdf(self):
+        def open_pdf_picker():
+            app = MDApp.get_running_app()
+            app.active_session_pages = []
+            app.editing_document_id = None
+            app.pending_scanner_action = "pdf"
+            app.go_to("scanner")
+        self._prepare_new_session(open_pdf_picker)
+
+    def resume_scan(self):
+        app = MDApp.get_running_app()
+        if not app.active_session_pages:
+            self.refresh_home_stats()
+            return
+        app.latest_capture_path = app.active_session_pages[-1]
+        app.go_to("editor")
+
+    def discard_draft(self):
+        app = MDApp.get_running_app()
+        app.active_session_pages = []
+        app.editing_document_id = None
+        app.latest_capture_path = None
+        app.latest_raw_path = None
+        try:
+            app.clear_session_draft()
+        except Exception:
+            pass
+        self.refresh_home_stats()
 
     def go_documents(self):
         MDApp.get_running_app().go_to("documents")
@@ -266,6 +442,13 @@ class HomeScreen(MDScreen):
 
     def open_document(self, document: dict):
         dismiss_open_menu()
+        if document.get("protected"):
+            from ui.app_lock import request_pin
+            request_pin("Protected document", lambda: self._open_document_unlocked(document))
+            return
+        self._open_document_unlocked(document)
+
+    def _open_document_unlocked(self, document: dict):
         app = MDApp.get_running_app()
         if app.active_session_pages:
             # Opening a saved document replaces the in-progress session
@@ -297,6 +480,10 @@ class HomeScreen(MDScreen):
         app.editing_document_id = document["id"]
         app.latest_capture_path = pages[-1] if pages else None
         app.latest_raw_path = None
+        try:
+            app.set_sensitive_content(bool(document.get("protected")))
+        except Exception:
+            pass
         app.go_to("editor")
 
     # ---- Search --------------------------------------------------------
@@ -341,6 +528,75 @@ class HomeScreen(MDScreen):
         )
         dialog.open()
 
+    def toggle_favorite(self, document: dict):
+        app = MDApp.get_running_app()
+        app.db.set_favorite(document["id"], not bool(document.get("favorite")))
+        self.refresh_documents()
+
+    def toggle_protected(self, document: dict):
+        dismiss_open_menu()
+        app = MDApp.get_running_app()
+        from storage.security import has_pin
+        from kivymd.uix.button import MDFlatButton
+        if not has_pin(app.prefs):
+            dialog = MDDialog(
+                title="Set an app PIN first",
+                text="Open Settings → App & Privacy and create a PIN before protecting documents.",
+                buttons=[MDFlatButton(text="OK", on_release=lambda *_: dialog.dismiss())],
+            )
+            dialog.open()
+            return
+        from ui.app_lock import request_pin
+        target = not bool(document.get("protected"))
+        def apply():
+            app.db.set_protected(document["id"], target)
+            self.refresh_documents()
+        request_pin("Protect document" if target else "Unprotect document", apply)
+
+    def prompt_folder(self, document: dict):
+        dismiss_open_menu()
+        field = MDTextField(text=document.get("folder") or "", hint_text="Folder name (blank = no folder)")
+        from kivymd.uix.button import MDFlatButton
+
+        def save(*_):
+            MDApp.get_running_app().db.set_folder(document["id"], field.text)
+            dialog.dismiss()
+            self.refresh_documents()
+
+        dialog = MDDialog(
+            title="Move to folder",
+            type="custom",
+            content_cls=field,
+            buttons=[
+                MDFlatButton(text="CANCEL", on_release=lambda *_: dialog.dismiss()),
+                MDFlatButton(text="SAVE", on_release=save),
+            ],
+        )
+        dialog.open()
+
+    def prompt_tags(self, document: dict):
+        dismiss_open_menu()
+        existing = document.get("tags") or []
+        field = MDTextField(text=", ".join(existing), hint_text="Tags separated by commas")
+        from kivymd.uix.button import MDFlatButton
+
+        def save(*_):
+            tags = [part.strip() for part in field.text.split(",") if part.strip()]
+            MDApp.get_running_app().db.set_tags(document["id"], tags)
+            dialog.dismiss()
+            self.refresh_documents()
+
+        dialog = MDDialog(
+            title="Edit tags",
+            type="custom",
+            content_cls=field,
+            buttons=[
+                MDFlatButton(text="CANCEL", on_release=lambda *_: dialog.dismiss()),
+                MDFlatButton(text="SAVE", on_release=save),
+            ],
+        )
+        dialog.open()
+
     def confirm_delete(self, document: dict):
         dismiss_open_menu()
         from kivymd.uix.button import MDFlatButton
@@ -351,17 +607,24 @@ class HomeScreen(MDScreen):
             dialog.dismiss()
 
         dialog = MDDialog(
-            title="Delete document?",
-            text=f'"{document["name"]}" will be permanently deleted.',
+            title="Move document to Trash?",
+            text=f'"{document["name"]}" can be restored later from Trash.',
             buttons=[
                 MDFlatButton(text="CANCEL", on_release=lambda *a: dialog.dismiss()),
-                MDFlatButton(text="DELETE", on_release=do_delete),
+                MDFlatButton(text="MOVE TO TRASH", on_release=do_delete),
             ],
         )
         dialog.open()
 
     def export_document(self, document: dict):
         dismiss_open_menu()
+        if document.get("protected"):
+            from ui.app_lock import request_pin
+            request_pin("Protected document", lambda: self._export_document_unlocked(document))
+            return
+        self._export_document_unlocked(document)
+
+    def _export_document_unlocked(self, document: dict):
         app = MDApp.get_running_app()
         pages = app.db.get_pages(
             document["id"]
@@ -462,6 +725,8 @@ class HomeScreen(MDScreen):
                         )
                     ),
                     quality=quality,
+                    searchable=bool(options.get("searchable", False)),
+                    ocr_language=app.prefs.get("ocr_language") or "english",
                 )
 
             elif len(pages) == 1:
@@ -492,6 +757,13 @@ class HomeScreen(MDScreen):
                     quality=quality,
                 )
 
+            try:
+                self._last_external_export = app.storage.publish_export(output_path, app.prefs)
+                self._last_external_export_error = None
+            except Exception as publish_exc:
+                self._last_external_export = None
+                self._last_external_export_error = str(publish_exc)
+
             result = (
                 True,
                 output_path,
@@ -515,6 +787,13 @@ class HomeScreen(MDScreen):
 
     def run_ocr(self, document: dict):
         dismiss_open_menu()
+        if document.get("protected"):
+            from ui.app_lock import request_pin
+            request_pin("Protected document", lambda: self._run_ocr_unlocked(document))
+            return
+        self._run_ocr_unlocked(document)
+
+    def _run_ocr_unlocked(self, document: dict):
         app = MDApp.get_running_app()
         pages = app.db.get_pages(document["id"])
         if not pages:
@@ -541,7 +820,7 @@ class HomeScreen(MDScreen):
         preferred = app.prefs.get("ocr_language")
         content = MDBoxLayout(orientation="horizontal", spacing="12dp",
                                size_hint_y=None, height="48dp")
-        for label, lang in [("ENGLISH", "english"), ("BENGALI", "bengali")]:
+        for label, lang in [("ENGLISH", "english"), ("BENGALI", "bengali"), ("EN+বাংলা", "mixed")]:
             content.add_widget(MDFlatButton(
                 text=label,
                 theme_text_color="Custom",
@@ -585,21 +864,27 @@ class HomeScreen(MDScreen):
         Clock.schedule_once(finish, 0)
 
     def _on_ocr_done(self, document, success: bool, text_or_error: str):
-        from kivymd.uix.button import MDFlatButton
-
         if success:
-            preview = text_or_error[:300] + ("..." if len(text_or_error) > 300 else "")
-            dialog = MDDialog(
-                title="OCR complete",
-                text=preview or "No text was recognized on this document.",
-                buttons=[MDFlatButton(text="OK", on_release=lambda *a: dialog.dismiss())],
+            from ui.ocr_result import show_ocr_result_editor
+            app = MDApp.get_running_app()
+
+            def save_text(value):
+                app.db.update_ocr_text(document["id"], value)
+                self.refresh_documents()
+
+            show_ocr_result_editor(
+                f"{document.get('name', 'Document')} - OCR",
+                text_or_error or "",
+                on_save=save_text,
             )
-        else:
-            dialog = MDDialog(
-                title="OCR failed",
-                text=text_or_error,
-                buttons=[MDFlatButton(text="OK", on_release=lambda *a: dialog.dismiss())],
-            )
+            return
+
+        from kivymd.uix.button import MDFlatButton
+        dialog = MDDialog(
+            title="OCR failed",
+            text=text_or_error,
+            buttons=[MDFlatButton(text="OK", on_release=lambda *a: dialog.dismiss())],
+        )
         dialog.open()
 
     def _on_export_done(self, success: bool, path_or_error: str):
@@ -617,9 +902,19 @@ class HomeScreen(MDScreen):
                     text="SHARE",
                     on_release=lambda *a: self._share_exported(dialog, path_or_error),
                 ))
+                buttons.insert(0, MDFlatButton(
+                    text="OPEN",
+                    on_release=lambda *a: self._open_exported(dialog, path_or_error),
+                ))
             dialog = MDDialog(
                 title="Export complete",
-                text=f"Saved to:\n{path_or_error}",
+                text=(
+                    f"Saved in app storage:\n{path_or_error}"
+                    + (f"\n\nExternal copy:\n{getattr(self, '_last_external_export', '')}"
+                       if getattr(self, '_last_external_export', None) and getattr(self, '_last_external_export', None) != path_or_error else "")
+                    + (f"\n\nExternal save failed:\n{getattr(self, '_last_external_export_error', '')}"
+                       if getattr(self, '_last_external_export_error', None) else "")
+                ),
                 buttons=buttons,
             )
         else:
@@ -629,6 +924,20 @@ class HomeScreen(MDScreen):
                 buttons=[MDFlatButton(text="OK", on_release=lambda *a: dialog.dismiss())],
             )
         dialog.open()
+
+    def _open_exported(self, dialog, file_path: str):
+        dialog.dismiss()
+        from storage.share import open_file
+        from kivymd.uix.button import MDFlatButton
+        try:
+            open_file(file_path)
+        except Exception as e:
+            error_dialog = MDDialog(
+                title="Open failed",
+                text=str(e),
+                buttons=[MDFlatButton(text="OK", on_release=lambda *a: error_dialog.dismiss())],
+            )
+            error_dialog.open()
 
     def _share_exported(self, dialog, file_path: str):
         dialog.dismiss()

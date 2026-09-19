@@ -7,4 +7,6 @@ reportlab==4.2.5
 pyjnius==1.6.1
 camera4kivy==0.3.3
 androidstorage4kivy==1.0.0
-
+pypdf==5.9.0
+qrcode==8.2
+pyaes==1.6.1
