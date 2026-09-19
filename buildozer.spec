@@ -13,7 +13,7 @@ version = 1.1.0
 # SOURCE FILES
 # ================================================================
 source.dir = .
-source.include_exts = py,kv,png,jpg,jpeg,webp,atlas,json,txt,ttf,otf,xml,traineddata
+source.include_exts = py,kv,png,jpg,jpeg,webp,atlas,json,txt,ttf,otf,afm,pfb,xml,traineddata
 source.exclude_dirs = .git,.github,.buildozer,bin,__pycache__,venv,.venv,camerax_provider/.git,tests,build-debug,release,.pytest_cache
 source.exclude_patterns = *.pyc,*.pyo,*.log,*.zip,*.apk,*.aab,*.sha256,*~
 
@@ -25,8 +25,13 @@ source.exclude_patterns = *.pyc,*.pyo,*.log,*.zip,*.apk,*.aab,*.sha256,*~
 # Kivy 2.3.0 officially supports Python through 3.12.
 # We pin BOTH target Python and hostpython to 3.11.5 and pair them
 # with python-for-android v2024.01.21, whose Python recipe defaults to 3.11.5.
+#
+# ReportLab is intentionally NOT listed here. p4a v2024.01.21 has an old
+# ReportLab recipe pinned to a 2016 Mercurial archive which can return HTTP
+# 403 and is too old for our Python 3.11 target. GitHub Actions vendors the
+# official pure-Python ReportLab 4.2.5 wheel into the project source instead.
 # ================================================================
-requirements = python3==3.11.5,hostpython3==3.11.5,kivy==2.3.0,kivymd==1.2.0,pyjnius,numpy,pillow,opencv,camera4kivy,gestures4kivy,androidstorage4kivy,reportlab,pypdf,qrcode,pyaes==1.6.1
+requirements = python3==3.11.5,hostpython3==3.11.5,kivy==2.3.0,kivymd==1.2.0,pyjnius,numpy,pillow,opencv,camera4kivy,gestures4kivy,androidstorage4kivy,chardet==5.2.0,pypdf,qrcode,pyaes==1.6.1
 
 
 # ================================================================

@@ -4,6 +4,7 @@ opencv-python-headless==4.10.0.84
 numpy==1.26.4
 pillow==10.4.0
 reportlab==4.2.5
+chardet==5.2.0
 pyjnius==1.6.1
 camera4kivy==0.3.3
 androidstorage4kivy==1.0.0

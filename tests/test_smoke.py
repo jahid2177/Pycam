@@ -35,6 +35,18 @@ class FastIntegrationSmokeTests(unittest.TestCase):
         self.assertTrue(report["ok"], report["errors"])
         self.assertGreaterEqual(report["checks_passed"], 30)
 
+
+    def test_reportlab_recipe_is_bypassed(self):
+        spec_text = (Path.cwd() / "buildozer.spec").read_text(encoding="utf-8")
+        workflow = (Path.cwd() / ".github" / "workflows" / "build-apk.yml").read_text(encoding="utf-8")
+        req_line = next(line for line in spec_text.splitlines() if line.strip().startswith("requirements ="))
+        reqs = {item.strip() for item in req_line.split("=", 1)[1].split(",")}
+        self.assertNotIn("reportlab", reqs)
+        self.assertIn("chardet==5.2.0", reqs)
+        self.assertIn("reportlab-4.2.5-py3-none-any.whl", workflow)
+        self.assertIn("eb2745525a982d9880babb991619e97ac3f661fae30571b7d50387026ca765ee", workflow)
+        self.assertNotIn("P4A_reportlab_DIR", workflow)
+
     def test_core_python_sources_compile(self):
         import py_compile
         roots = ("main.py", "database/database.py", "storage/integration_check.py", "storage/health_check.py", "storage/android_compat.py")
