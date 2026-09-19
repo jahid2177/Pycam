@@ -63,6 +63,10 @@ android.permissions = CAMERA,INTERNET,(name=android.permission.READ_EXTERNAL_STO
 # ================================================================
 android.gradle_dependencies = com.google.android.gms:play-services-mlkit-text-recognition:19.0.1,com.rmtheis:tess-two:9.1.0
 
+# Tess-two AAR bundles native binaries for multiple ABIs. This app is arm64-only,
+# so exclude foreign Tess/Leptonica binaries before APK signing to reduce size.
+android.add_packaging_options = "exclude 'lib/x86/libtess.so'", "exclude 'lib/x86/liblept.so'", "exclude 'lib/x86_64/libtess.so'", "exclude 'lib/x86_64/liblept.so'", "exclude 'lib/armeabi-v7a/libtess.so'", "exclude 'lib/armeabi-v7a/liblept.so'"
+
 # ================================================================
 # STORAGE / ACTIVITY
 # ================================================================
