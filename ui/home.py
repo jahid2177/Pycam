@@ -308,7 +308,7 @@ class HomeScreen(MDScreen):
         app = MDApp.get_running_app()
         try:
             lang = app.prefs.get("app_language") if getattr(app, "prefs", None) else "en"
-            self.storage_usage_text = f"{tr("storage", lang, "Storage")}: {self._format_bytes(app.storage.get_storage_size_bytes())}"
+            self.storage_usage_text = f"{tr('storage', lang, 'Storage')}: {self._format_bytes(app.storage.get_storage_size_bytes())}"
         except Exception:
             self.storage_usage_text = tr("storage_unavailable", app.prefs.get("app_language"), "Storage unavailable")
         count = len(app.active_session_pages or [])
@@ -316,7 +316,7 @@ class HomeScreen(MDScreen):
         if count:
             lang = app.prefs.get("app_language")
             label = tr("page", lang, "page") if count == 1 else tr("pages", lang, "pages")
-            self.resume_text = f"{tr("unfinished_scan", lang, "Unfinished scan")} • {count} {label}"
+            self.resume_text = f"{tr('unfinished_scan', lang, 'Unfinished scan')} • {count} {label}"
         else:
             self.resume_text = ""
 
